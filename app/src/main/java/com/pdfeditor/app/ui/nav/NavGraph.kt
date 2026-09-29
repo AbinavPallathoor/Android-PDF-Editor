@@ -1,11 +1,15 @@
 package com.pdfeditor.app.ui.nav
 
+import android.app.ActivityManager
 import android.content.ContentResolver
+import android.content.Context
 import android.net.Uri
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
@@ -17,6 +21,7 @@ import com.pdfeditor.app.domain.RecentsRepository
 import com.pdfeditor.app.ui.home.HomeScreen
 import com.pdfeditor.app.ui.home.HomeViewModel
 import com.pdfeditor.app.ui.reader.ReaderScreen
+import com.pdfeditor.app.ui.reader.ReaderViewModel
 import kotlinx.coroutines.launch
 
 @Composable
@@ -53,7 +58,36 @@ fun PdfEditorNavGraph(
 
         composable<ReaderRoute> { backStackEntry ->
             val route = backStackEntry.toRoute<ReaderRoute>()
-            ReaderScreen(displayName = route.displayName)
+            val context = LocalContext.current
+            val cacheBudgetBytes = remember { pageBitmapCacheBudgetBytes(context) }
+            val readerViewModel: ReaderViewModel =
+                viewModel(
+                    key = "reader-${route.documentId}",
+                    factory =
+                        ReaderViewModel.Factory(
+                            recentsRepository = recentsRepository,
+                            documentId = route.documentId,
+                            uri = route.uri,
+                            contentResolver = contentResolver,
+                            cacheBudgetBytes = cacheBudgetBytes,
+                        ),
+                )
+            val uiState by readerViewModel.uiState.collectAsState()
+
+            ReaderScreen(
+                uiState = uiState,
+                renderPage = { pageIndex, widthPx, heightPx -> readerViewModel.renderPage(pageIndex, widthPx, heightPx) },
+                onPositionChanged = { pageIndex, zoomScale, scrollFraction ->
+                    readerViewModel.updateReadingPosition(pageIndex, zoomScale, scrollFraction)
+                },
+            )
         }
     }
+}
+
+/** Roughly a sixth of the app's memory class, per CLAUDE.md's PdfRendererEngine memory-bounds note. */
+private fun pageBitmapCacheBudgetBytes(context: Context): Int {
+    val activityManager = context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
+    val memoryClassMb = activityManager.memoryClass
+    return (memoryClassMb * 1024 * 1024) / 6
 }

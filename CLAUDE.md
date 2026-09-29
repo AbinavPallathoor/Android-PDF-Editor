@@ -98,7 +98,20 @@ adding form-filling/encryption support later without a rewrite.
   a time per renderer instance.** `PdfRendererEngine` must serialize all
   render calls through a single dedicated dispatcher + mutex, and cancel
   queued (not in-flight — `render()` can't be interrupted) requests for pages
-  that scroll out of view.
+  that scroll out of view. Milestone 2 relies on `LazyColumn`'s own
+  virtualization + per-item `LaunchedEffect` cancellation for this rather than
+  a hand-rolled priority queue — revisit only if profiling shows it's not
+  enough.
+- **`Page.render()` requires `Bitmap.Config.ARGB_8888` — `RGB_565` throws
+  "Unsupported pixel format"**, confirmed live (silently caught, it just
+  produces a blank page with no error, which is what actually happened during
+  Milestone 2 testing). The `RGB_565` memory saving from the original design
+  pass isn't available through this API; budget bitmap cache size accordingly.
+  Also: **`render()` does not paint a white page background** — it only draws
+  actual content — so the destination bitmap must be `eraseColor(WHITE)`'d
+  before every render call, or unpainted areas show through as whatever was
+  already in the bitmap (this is what made rendered text/shapes invisible
+  before the fix: black content on an un-erased, effectively black bitmap).
 - **PdfRenderer and PdfBox-Android never hold the same document open at the
   same time.** Reading mode holds a read-only PFD via `PdfRendererEngine`;
   entering Writing mode closes it and copies the source into a private
@@ -106,9 +119,23 @@ adding form-filling/encryption support later without a rewrite.
   which wants file-based random access, not a streaming `content://` fd.
 - **Gesture arbitration lives in one `awaitEachGesture` block per surface**,
   not stacked independent `detectTapGestures`/`detectTransformGestures`
-  modifiers (they race each other). Classification logic is extracted into a
-  plain-Kotlin state machine over an abstracted `TouchSample`, so it's
+  modifiers (they race each other). Confirmed live in Milestone 2: layering
+  `detectTapGestures` next to a separate custom pinch `awaitEachGesture` loop
+  on the same `pointerInput` block sporadically dropped the second tap of a
+  double-tap — two coroutines independently calling `awaitPointerEvent()` on
+  the same block can each miss events during fast sequences. Fixed by
+  merging into one state machine (`ui/reader/PinchZoomGesture.kt`) that
+  manually distinguishes tap/double-tap/pinch/pan itself. Apply the same
+  "one reader of the event stream" rule when building the full gesture engine
+  in Milestone 3. Classification logic should stay extractable into a
+  plain-Kotlin state machine over an abstracted `TouchSample` so it's
   unit-testable without Compose.
+- **Dark-friendly invert (Milestone 2) is a full RGB color-matrix invert, not
+  a true "smart" invert that preserves photos/images.** True per-content
+  smart invert (à la iOS) needs to distinguish image regions from
+  text/vector content, which isn't available from `PdfRenderer`'s flat
+  rasterized bitmap output. Documented simplification, on by default per the
+  brief; revisit only if a real need for image-preserving invert shows up.
 - **PdfBox-Android is the biggest APK-size risk** (it bundles font/metrics
   assets loaded by runtime string path, which R8 can't shrink). Milestone 1's
   spike measured a release build (minify + resource shrinking on) with just
@@ -145,7 +172,7 @@ Studio nor a system JDK was preinstalled):
 ## Milestones
 
 1. Scaffold, theme, navigation, Home + recents (Room) + SAF open flow — **done**
-2. Reading mode: rendering, scroll, zoom, page indicator, remembered position
+2. Reading mode: rendering, scroll, zoom, page indicator, remembered position — **done**
 3. Gesture system + animation framework
 4. Writing mode: sign, text, draw, erase, undo/redo, save-as-copy
 5. Page overview: reorder, delete, append
