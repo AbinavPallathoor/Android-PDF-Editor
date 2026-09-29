@@ -144,7 +144,7 @@ Studio nor a system JDK was preinstalled):
 
 ## Milestones
 
-1. Scaffold, theme, navigation, Home + recents (Room) + SAF open flow — **in progress**
+1. Scaffold, theme, navigation, Home + recents (Room) + SAF open flow — **done**
 2. Reading mode: rendering, scroll, zoom, page indicator, remembered position
 3. Gesture system + animation framework
 4. Writing mode: sign, text, draw, erase, undo/redo, save-as-copy
