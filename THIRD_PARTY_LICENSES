@@ -1,0 +1,89 @@
+PDF Editor — Third-Party Licenses
+==================================
+
+This app is 100% free and open source and depends only on permissively
+licensed (Apache-2.0 / MIT / BSD) software. No AGPL/GPL-licensed library is
+used anywhere in the app. No proprietary or closed-source SDK is used.
+
+Runtime dependencies
+---------------------
+
+Kotlin Standard Library
+  Copyright JetBrains s.r.o. and contributors
+  License: Apache License 2.0
+  https://github.com/JetBrains/kotlin
+
+Kotlin Coroutines (kotlinx.coroutines)
+  Copyright JetBrains s.r.o. and contributors
+  License: Apache License 2.0
+  https://github.com/Kotlin/kotlinx.coroutines
+
+Kotlin Serialization (kotlinx.serialization)
+  Copyright JetBrains s.r.o. and contributors
+  License: Apache License 2.0
+  https://github.com/Kotlin/kotlinx.serialization
+
+AndroidX Core, Lifecycle, Activity, Navigation Compose
+  Copyright The Android Open Source Project
+  License: Apache License 2.0
+  https://developer.android.com/jetpack/androidx
+
+Jetpack Compose (UI, Foundation, Material3)
+  Copyright The Android Open Source Project
+  License: Apache License 2.0
+  https://developer.android.com/jetpack/compose
+
+AndroidX Room
+  Copyright The Android Open Source Project
+  License: Apache License 2.0
+  https://developer.android.com/jetpack/androidx/releases/room
+
+Coil (coil-compose, coil3)
+  Copyright 2024 Coil Contributors
+  License: Apache License 2.0
+  https://github.com/coil-kt/coil
+
+PdfBox-Android (com.tom-roush:pdfbox-android)
+  A port of Apache PDFBox for Android.
+  Copyright The Apache Software Foundation; Android port by Tom Roush
+  License: Apache License 2.0
+  https://github.com/TomRoush/PdfBox-Android
+
+Platform android.graphics.pdf.PdfRenderer
+  Part of the Android SDK (AOSP). Not a separate dependency; no separate
+  license text required beyond the Android SDK's own terms.
+
+Build-time / test-only tooling (not shipped in the APK)
+--------------------------------------------------------
+
+Android Gradle Plugin
+  License: Apache License 2.0
+
+KSP (Kotlin Symbol Processing)
+  Copyright Google LLC
+  License: Apache License 2.0
+
+ktlint / org.jlleitschuh.gradle.ktlint Gradle plugin
+  License: MIT License
+
+JUnit4
+  License: Eclipse Public License 1.0 (test-only, not distributed with the app)
+
+Robolectric
+  License: MIT License (test-only, not distributed with the app)
+
+AndroidX Test (test-ext-junit, espresso-core)
+  License: Apache License 2.0 (test-only, not distributed with the app)
+
+AndroidX Baseline Profile / Macrobenchmark (added in Milestone 7)
+  License: Apache License 2.0 (build/benchmark-only, not distributed with the app)
+
+Notes
+-----
+- Deliberately NOT used: MuPDF, iText, or any other AGPL/GPL-licensed PDF
+  library; Google Play Services; Firebase; any closed-source SDK.
+- androidx.pdf (Google's Jetpack PDF library, Apache-2.0) was evaluated and
+  is not currently a dependency — it was still in alpha at evaluation time.
+  See the project plan for the full rationale; this file will be updated if
+  that changes in a future milestone.
+- This file is updated whenever a dependency is added, removed, or upgraded.

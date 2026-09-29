@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- A single minimal page-corner glyph, centered, in the accent color. -->
+    <path
+        android:pathData="M38,30 h22 l10,10 v38 h-32 z"
+        android:strokeColor="#5B8DEF"
+        android:strokeWidth="3"
+        android:fillColor="#00000000" />
+    <path
+        android:pathData="M60,30 v10 h10"
+        android:strokeColor="#5B8DEF"
+        android:strokeWidth="3"
+        android:fillColor="#00000000" />
+</vector>
