@@ -198,7 +198,7 @@ Studio nor a system JDK was preinstalled):
 2. Reading mode: rendering, scroll, zoom, page indicator, remembered position — **done**
 3. Gesture system + animation framework — **done**
 4. Writing mode: sign, text, draw, erase, undo/redo, save-as-copy — **done**
-5. Page overview: reorder, delete, append
+5. Page overview: reorder, delete, append — **done**
 6. File actions: compress, share/export
 7. Performance pass, edge cases, final licenses/README polish
 
@@ -244,6 +244,42 @@ SAF uri, flattens annotations via `PdfBoxAnnotationFlattener`, then launches
 original file is untouched and the exported copy is a valid, larger PDF
 (`file` reported `PDF document, version 1.4, 20 pages` with the appended
 stroke/text operators present).
+
+**Milestone 5 testing note:** `PageOverviewScreen`'s reorder/delete/append all
+edit a private working copy via `PdfBoxEditor` (structural ops split out of
+`PdfEditor`; `compress` moved to its own `PdfCompressor` interface, still
+unimplemented, for Milestone 6) and reload `ReaderViewModel`'s renderer
+against it - verified live: delete removed the right page and shifted
+everything up, append pulled in another picked PDF's pages, and thumbnails/
+pages correctly refreshed rather than showing stale content.
+
+Two real bugs were found and fixed during that manual testing, both worth
+remembering for future screens:
+- The page overview grid's top row rendered under the status bar, and (per
+  the Milestone 3 lesson) touches in that inset region never reach the app -
+  the top row's delete badges were completely untappable on a real device.
+  Fixed by adding `WindowInsets.systemBars.asPaddingValues()` to the grid's
+  `contentPadding`. Any full-bleed `LazyVerticalGrid`/`LazyColumn` with
+  interactive elements near an edge needs this.
+- After a structural edit, a page's index can now map to entirely different
+  content, but Compose's `remember(pageIndex, widthPx)` bitmap caches in
+  `PdfPageItem` and `OverviewThumbnail` had no way to know that - they kept
+  showing the stale bitmap for that index. Fixed by adding a
+  `documentVersion: Int` to `ReaderUiState.Ready` (bumped on every
+  reorder/delete/append) and keying those `remember`/`LaunchedEffect` blocks
+  on it too. Any future per-index UI cache needs the same key.
+
+Drag-to-reorder (long-press-then-drag) can't be driven by `adb shell input
+swipe` at all - it starts moving the pointer immediately rather than holding
+still first, which cancels `detectDragGesturesAfterLongPress` before it
+recognizes the press. Verified instead with Compose's synthetic touch
+injection and explicit timing control (`down` + `advanceEventTime(600)` past
+the long-press threshold + `moveTo` + `up`) - see
+`app/src/androidTest/java/com/pdfeditor/app/ui/reader/PageOverviewScreenTest.kt`.
+Sharing a document with structural edits applied needed a `FileProvider`
+(`androidx.core.content.FileProvider`, declared in `AndroidManifest.xml` with
+`res/xml/file_paths.xml` exposing `filesDir/working_copies/`) since a private
+`file://` path can't be handed to another app via `ACTION_SEND` directly.
 
 ## Out of scope for v1 (design so these can be added later; do not build them now)
 

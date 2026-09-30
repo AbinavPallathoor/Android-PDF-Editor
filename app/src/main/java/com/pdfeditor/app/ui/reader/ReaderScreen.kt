@@ -79,12 +79,26 @@ fun ReaderScreen(
     onClose: () -> Unit,
     onShare: () -> Unit,
     onSaveCopy: (pageIndex: Int, annotations: List<Annotation>) -> Unit,
+    onReorderPages: (List<Int>) -> Unit,
+    onDeletePage: (Int) -> Unit,
+    onAppendRequested: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Box(modifier = modifier.fillMaxSize().background(Color.Black)) {
         when (uiState) {
             is ReaderUiState.Loading -> Unit
-            is ReaderUiState.Ready -> ReadyReaderContent(uiState, renderPage, onPositionChanged, onClose, onShare, onSaveCopy)
+            is ReaderUiState.Ready ->
+                ReadyReaderContent(
+                    uiState,
+                    renderPage,
+                    onPositionChanged,
+                    onClose,
+                    onShare,
+                    onSaveCopy,
+                    onReorderPages,
+                    onDeletePage,
+                    onAppendRequested,
+                )
             is ReaderUiState.PasswordProtected ->
                 CenteredMessage(title = "Password-protected PDF", subtitle = "Encrypted PDFs aren't supported yet")
             is ReaderUiState.Error -> CenteredMessage(title = "Couldn't open this PDF", subtitle = uiState.message)
@@ -100,6 +114,9 @@ private fun ReadyReaderContent(
     onClose: () -> Unit,
     onShare: () -> Unit,
     onSaveCopy: (Int, List<Annotation>) -> Unit,
+    onReorderPages: (List<Int>) -> Unit,
+    onDeletePage: (Int) -> Unit,
+    onAppendRequested: () -> Unit,
 ) {
     var mode by remember { mutableStateOf(ReaderMode.READING) }
     var writingPageIndex by remember { mutableStateOf(state.initialPage) }
@@ -175,12 +192,16 @@ private fun ReadyReaderContent(
         if (showOverview) {
             PageOverviewScreen(
                 pageCount = state.pageCount,
+                documentVersion = state.documentVersion,
                 pageAspectRatios = state.pageAspectRatios,
                 renderThumbnail = renderPage,
                 onPageSelected = { page ->
                     scope.launch { listState.scrollToItem(page) }
                     showOverview = false
                 },
+                onReorderPages = onReorderPages,
+                onDeletePage = onDeletePage,
+                onAppendRequested = onAppendRequested,
                 onDismiss = { showOverview = false },
             )
         }
@@ -339,6 +360,7 @@ private fun ReadingPager(
             items(count = state.pageCount, key = { it }) { index ->
                 PdfPageItem(
                     pageIndex = index,
+                    documentVersion = state.documentVersion,
                     aspectRatio = state.pageAspectRatios[index],
                     invertColors = state.invertColors,
                     renderPage = renderPage,
@@ -361,6 +383,7 @@ private fun ReadingPager(
 @Composable
 private fun PdfPageItem(
     pageIndex: Int,
+    documentVersion: Int,
     aspectRatio: Float,
     invertColors: Boolean,
     renderPage: suspend (Int, Int, Int) -> Bitmap?,
@@ -371,9 +394,12 @@ private fun PdfPageItem(
         val widthPx = with(density) { maxWidth.roundToPx() }
         val heightPx = (widthPx * aspectRatio).roundToInt()
         val heightDp = with(density) { heightPx.toDp() }
-        var bitmap by remember(pageIndex, widthPx) { mutableStateOf<Bitmap?>(null) }
+        // Keyed on documentVersion too: after a structural edit (reorder/delete/append) the same
+        // pageIndex can now point at entirely different content, so a stale cached bitmap must be
+        // dropped even though pageIndex/widthPx alone haven't changed.
+        var bitmap by remember(pageIndex, widthPx, documentVersion) { mutableStateOf<Bitmap?>(null) }
 
-        LaunchedEffect(pageIndex, widthPx) {
+        LaunchedEffect(pageIndex, widthPx, documentVersion) {
             bitmap = renderPage(pageIndex, widthPx, heightPx)
         }
 

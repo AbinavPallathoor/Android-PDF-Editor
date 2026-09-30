@@ -15,6 +15,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalContext
+import androidx.core.content.FileProvider
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
@@ -69,6 +70,7 @@ fun PdfEditorNavGraph(
             val route = backStackEntry.toRoute<ReaderRoute>()
             val context = LocalContext.current
             val cacheBudgetBytes = remember { pageBitmapCacheBudgetBytes(context) }
+            val workingCopiesDir = remember { File(context.filesDir, "working_copies") }
             val readerViewModel: ReaderViewModel =
                 viewModel(
                     key = "reader-${route.documentId}",
@@ -78,6 +80,7 @@ fun PdfEditorNavGraph(
                             documentId = route.documentId,
                             uri = route.uri,
                             contentResolver = contentResolver,
+                            workingCopiesDir = workingCopiesDir,
                             cacheBudgetBytes = cacheBudgetBytes,
                         ),
                 )
@@ -100,6 +103,23 @@ fun PdfEditorNavGraph(
                     }
                 }
 
+            val appendLauncher =
+                rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { pickedUri ->
+                    if (pickedUri != null) {
+                        scope.launch {
+                            val copied =
+                                withContext(Dispatchers.IO) {
+                                    val file = File(workingCopiesDir.apply { mkdirs() }, "append-${System.currentTimeMillis()}.pdf")
+                                    context.contentResolver.openInputStream(pickedUri)?.use { input ->
+                                        file.outputStream().use { output -> input.copyTo(output) }
+                                    }
+                                    file
+                                }
+                            readerViewModel.appendPages(listOf(copied))
+                        }
+                    }
+                }
+
             ReaderScreen(
                 uiState = uiState,
                 renderPage = { pageIndex, widthPx, heightPx -> readerViewModel.renderPage(pageIndex, widthPx, heightPx) },
@@ -108,32 +128,51 @@ fun PdfEditorNavGraph(
                 },
                 onClose = { navController.popBackStack() },
                 onShare = {
+                    // If structural edits exist, share the edited working copy instead of the
+                    // untouched original - it needs a FileProvider content:// uri since it's a
+                    // private-storage file that can't be handed to another app directly.
+                    val workingFile = readerViewModel.currentWorkingFile()
+                    val shareUri =
+                        if (workingFile != null) {
+                            FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", workingFile)
+                        } else {
+                            route.uri
+                        }
                     val sendIntent =
                         Intent(Intent.ACTION_SEND).apply {
                             type = "application/pdf"
-                            putExtra(Intent.EXTRA_STREAM, route.uri)
+                            putExtra(Intent.EXTRA_STREAM, shareUri)
                             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                         }
                     context.startActivity(Intent.createChooser(sendIntent, null))
                 },
                 onSaveCopy = { pageIndex, annotations ->
                     scope.launch {
-                        // Never overwrite the original: always flatten into a private working
-                        // copy first, then let the user pick a brand-new destination via SAF.
+                        // Never overwrite the original: always flatten into a fresh, dedicated
+                        // export file - copied from the edited working copy if structural edits
+                        // exist (reorder/delete/append), else from the untouched original - then
+                        // let the user pick a brand-new destination via SAF.
                         val exportFile =
                             withContext(Dispatchers.IO) {
-                                val workingDir = File(context.filesDir, "working_copies").apply { mkdirs() }
-                                val workingFile = File(workingDir, "${route.documentId}.pdf")
-                                context.contentResolver.openInputStream(route.uri)?.use { input ->
-                                    workingFile.outputStream().use { output -> input.copyTo(output) }
+                                val source = File(workingCopiesDir.apply { mkdirs() }, "${route.documentId}-export.pdf")
+                                val workingFile = readerViewModel.currentWorkingFile()
+                                if (workingFile != null) {
+                                    workingFile.inputStream().use { input -> source.outputStream().use { output -> input.copyTo(output) } }
+                                } else {
+                                    context.contentResolver.openInputStream(route.uri)?.use { input ->
+                                        source.outputStream().use { output -> input.copyTo(output) }
+                                    }
                                 }
-                                flattener.flattenAnnotations(workingFile, mapOf(pageIndex to annotations))
+                                flattener.flattenAnnotations(source, mapOf(pageIndex to annotations))
                             }
                         pendingExportFile = exportFile
                         val baseName = route.displayName.removeSuffix(".pdf")
                         createDocumentLauncher.launch("$baseName-edited.pdf")
                     }
                 },
+                onReorderPages = { newOrder -> readerViewModel.reorderPages(newOrder) },
+                onDeletePage = { pageIndex -> readerViewModel.deletePages(setOf(pageIndex)) },
+                onAppendRequested = { appendLauncher.launch(arrayOf("application/pdf")) },
             )
         }
     }
