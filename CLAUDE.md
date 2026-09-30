@@ -130,6 +130,29 @@ adding form-filling/encryption support later without a rewrite.
   in Milestone 3. Classification logic should stay extractable into a
   plain-Kotlin state machine over an abstracted `TouchSample` so it's
   unit-testable without Compose.
+- **The system status bar and navigation bar intercept touches in their own inset region for
+  their own gestures (pull-down notification shade, swipe-up-home) before any app ever sees
+  them.** Confirmed live: an edge-swipe zone placed at literal y=0 (or the literal bottom edge)
+  silently receives nothing, no matter how the gesture code is written - it looks exactly like a
+  Compose bug but isn't one. Query `WindowInsets.statusBars`/`WindowInsets.navigationBars` and
+  start edge-swipe-to-trigger zones just past those insets (see `ReadyReaderContent` in
+  `ReaderScreen.kt`), never at the literal screen edge.
+- **A plain `pointerInput`/`awaitPointerEvent()` loop cannot reliably measure a drag that a
+  `Modifier.scrollable` (e.g. `LazyColumn`) also recognizes as a scroll.** Once the scrollable's
+  own internal gesture detector confirms the drag past touch slop, Compose cancels *other*
+  pointer-input consumers watching that same pointer outright - the pointer disappears from later
+  events entirely, not just a reduced/consumed delta. This is true whether the other consumer is a
+  sibling overlay `Box` or the direct parent wrapping the scrollable. Confirmed live twice while
+  building edge-swipe-to-close: first with a separate overlay zone (measured a few px before losing
+  the pointer - looked like a bounds issue, wasn't), then again after folding the same detection
+  into the content's own unified gesture loop (still lost the pointer around the same real
+  distance, proving it wasn't about node bounds or a second coroutine at all). **The fix: use
+  `NestedScrollConnection.onPreScroll`**, which observes every scroll attempt cooperatively
+  (pre- or post-consumption) without racing or being cancelled by the scrollable - see
+  `ReadingPager`'s `edgeSwipeConnection` in `ReaderScreen.kt`. Gate such gestures on
+  `canScrollBackward`/`canScrollForward` (i.e. "nothing left to scroll that way") rather than
+  "touch started near the screen edge" - it sidesteps needing `WindowInsets` math entirely and
+  only engages when pulling further would otherwise be a no-op anyway.
 - **Dark-friendly invert (Milestone 2) is a full RGB color-matrix invert, not
   a true "smart" invert that preserves photos/images.** True per-content
   smart invert (à la iOS) needs to distinguish image regions from
@@ -173,7 +196,7 @@ Studio nor a system JDK was preinstalled):
 
 1. Scaffold, theme, navigation, Home + recents (Room) + SAF open flow — **done**
 2. Reading mode: rendering, scroll, zoom, page indicator, remembered position — **done**
-3. Gesture system + animation framework
+3. Gesture system + animation framework — **done**
 4. Writing mode: sign, text, draw, erase, undo/redo, save-as-copy
 5. Page overview: reorder, delete, append
 6. File actions: compress, share/export
@@ -181,6 +204,16 @@ Studio nor a system JDK was preinstalled):
 
 Each milestone is built, run, and manually exercised on an emulator before
 moving to the next, then committed with a clear message.
+
+**Milestone 3 testing note:** `adb shell input swipe/tap` can only simulate
+single-pointer gestures - it cannot drive real multi-touch. Edge-swipe-close,
+edge-swipe-to-file-actions-sheet, long-press-for-slider, scroll, and
+pinch/double-tap zoom were all verified live via adb. Two-finger vertical
+swipe (mode toggle) and pinch-out-at-minimum-zoom (page overview) are
+implemented but could only be verified by hand in the live emulator window
+(the user tried pinch-zoom directly in Milestone 2's testing and it worked) -
+if either misbehaves, check `PinchZoomGesture.kt`'s `TwoFingerClassification`
+thresholds (`OVERVIEW_ZOOM_RATIO`, `MODE_SWIPE_THRESHOLD_PX`) first.
 
 ## Out of scope for v1 (design so these can be added later; do not build them now)
 

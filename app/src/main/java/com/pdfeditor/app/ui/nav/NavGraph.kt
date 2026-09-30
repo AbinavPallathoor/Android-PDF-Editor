@@ -3,6 +3,7 @@ package com.pdfeditor.app.ui.nav
 import android.app.ActivityManager
 import android.content.ContentResolver
 import android.content.Context
+import android.content.Intent
 import android.net.Uri
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
@@ -79,6 +80,16 @@ fun PdfEditorNavGraph(
                 renderPage = { pageIndex, widthPx, heightPx -> readerViewModel.renderPage(pageIndex, widthPx, heightPx) },
                 onPositionChanged = { pageIndex, zoomScale, scrollFraction ->
                     readerViewModel.updateReadingPosition(pageIndex, zoomScale, scrollFraction)
+                },
+                onClose = { navController.popBackStack() },
+                onShare = {
+                    val sendIntent =
+                        Intent(Intent.ACTION_SEND).apply {
+                            type = "application/pdf"
+                            putExtra(Intent.EXTRA_STREAM, route.uri)
+                            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                        }
+                    context.startActivity(Intent.createChooser(sendIntent, null))
                 },
             )
         }
