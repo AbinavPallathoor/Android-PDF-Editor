@@ -197,7 +197,7 @@ Studio nor a system JDK was preinstalled):
 1. Scaffold, theme, navigation, Home + recents (Room) + SAF open flow — **done**
 2. Reading mode: rendering, scroll, zoom, page indicator, remembered position — **done**
 3. Gesture system + animation framework — **done**
-4. Writing mode: sign, text, draw, erase, undo/redo, save-as-copy
+4. Writing mode: sign, text, draw, erase, undo/redo, save-as-copy — **done**
 5. Page overview: reorder, delete, append
 6. File actions: compress, share/export
 7. Performance pass, edge cases, final licenses/README polish
@@ -214,6 +214,36 @@ implemented but could only be verified by hand in the live emulator window
 (the user tried pinch-zoom directly in Milestone 2's testing and it worked) -
 if either misbehaves, check `PinchZoomGesture.kt`'s `TwoFingerClassification`
 thresholds (`OVERVIEW_ZOOM_RATIO`, `MODE_SWIPE_THRESHOLD_PX`) first.
+
+**Milestone 4 testing note:** writing mode's two/three-finger undo/redo and
+mode-toggle swipe hit the same adb multi-touch limitation as Milestone 3, but
+this time it was worked around properly instead of just hand-waved: see
+`app/src/androidTest/java/com/pdfeditor/app/ui/writing/WritingGesturesTest.kt`,
+which drives `writingGestures` with Compose's `performTouchInput` multi-pointer
+API (`down(pointerId, pos)` / `moveTo` / `up`) - this dispatches real
+multi-pointer `PointerInputChange` sequences through the actual gesture code,
+so it's a genuine test of the classification logic, not a workaround. Run it
+with `./gradlew :app:connectedDebugAndroidTest` against a running
+emulator/device. Prefer this pattern over adb for any future multi-touch
+verification.
+
+Also found and fixed during manual testing: `writingGestures` originally
+routed a stationary single-finger tap straight to the (empty) draw-stroke
+branch whenever the Draw tool was active, so it never fell through to
+`onTap` - meaning tapping the canvas to wake a hidden tool tray silently did
+nothing while Draw was selected. Fixed by only taking the draw-stroke branch
+when `drawPoints.size >= 2`. The tool tray auto-hides after 4s idle
+(`WritingScreen.kt`'s `interactionTick`/`pokeInteraction`); a tap while
+hidden always wakes it without performing the tool action - remember this
+"first tap wakes, second tap acts" behavior when testing any tool by hand.
+
+Save-as-copy (`NavGraph.kt`'s `onSaveCopy`) was verified end-to-end: opens a
+fresh working copy in `filesDir/working_copies/<docId>.pdf` from the original
+SAF uri, flattens annotations via `PdfBoxAnnotationFlattener`, then launches
+`ActivityResultContracts.CreateDocument` for the destination - confirmed the
+original file is untouched and the exported copy is a valid, larger PDF
+(`file` reported `PDF document, version 1.4, 20 pages` with the appended
+stroke/text operators present).
 
 ## Out of scope for v1 (design so these can be added later; do not build them now)
 

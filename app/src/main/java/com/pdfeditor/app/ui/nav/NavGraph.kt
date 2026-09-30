@@ -5,17 +5,22 @@ import android.content.ContentResolver
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.toRoute
+import com.pdfeditor.app.data.pdf.PdfBoxAnnotationFlattener
 import com.pdfeditor.app.data.resolveDocumentMetadata
 import com.pdfeditor.app.domain.RecentDocument
 import com.pdfeditor.app.domain.RecentsRepository
@@ -23,7 +28,10 @@ import com.pdfeditor.app.ui.home.HomeScreen
 import com.pdfeditor.app.ui.home.HomeViewModel
 import com.pdfeditor.app.ui.reader.ReaderScreen
 import com.pdfeditor.app.ui.reader.ReaderViewModel
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.io.File
 
 @Composable
 fun PdfEditorNavGraph(
@@ -75,6 +83,23 @@ fun PdfEditorNavGraph(
                 )
             val uiState by readerViewModel.uiState.collectAsState()
 
+            val flattener = remember { PdfBoxAnnotationFlattener() }
+            var pendingExportFile by remember { mutableStateOf<File?>(null) }
+            val createDocumentLauncher =
+                rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/pdf")) { destUri ->
+                    val exportFile = pendingExportFile
+                    pendingExportFile = null
+                    if (destUri != null && exportFile != null) {
+                        scope.launch {
+                            withContext(Dispatchers.IO) {
+                                context.contentResolver.openOutputStream(destUri)?.use { out ->
+                                    exportFile.inputStream().use { it.copyTo(out) }
+                                }
+                            }
+                        }
+                    }
+                }
+
             ReaderScreen(
                 uiState = uiState,
                 renderPage = { pageIndex, widthPx, heightPx -> readerViewModel.renderPage(pageIndex, widthPx, heightPx) },
@@ -90,6 +115,24 @@ fun PdfEditorNavGraph(
                             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                         }
                     context.startActivity(Intent.createChooser(sendIntent, null))
+                },
+                onSaveCopy = { pageIndex, annotations ->
+                    scope.launch {
+                        // Never overwrite the original: always flatten into a private working
+                        // copy first, then let the user pick a brand-new destination via SAF.
+                        val exportFile =
+                            withContext(Dispatchers.IO) {
+                                val workingDir = File(context.filesDir, "working_copies").apply { mkdirs() }
+                                val workingFile = File(workingDir, "${route.documentId}.pdf")
+                                context.contentResolver.openInputStream(route.uri)?.use { input ->
+                                    workingFile.outputStream().use { output -> input.copyTo(output) }
+                                }
+                                flattener.flattenAnnotations(workingFile, mapOf(pageIndex to annotations))
+                            }
+                        pendingExportFile = exportFile
+                        val baseName = route.displayName.removeSuffix(".pdf")
+                        createDocumentLauncher.launch("$baseName-edited.pdf")
+                    }
                 },
             )
         }

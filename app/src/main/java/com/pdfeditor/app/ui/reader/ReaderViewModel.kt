@@ -23,6 +23,10 @@ sealed interface ReaderUiState {
         val pageCount: Int,
         /** height/width per page, used to lay out correctly-proportioned placeholders before a page renders. */
         val pageAspectRatios: List<Float>,
+        /** Page width in PDF points, needed to convert writing-mode screen coordinates back to PDF
+         * user-space accurately - see `PdfPageTransform`. Height isn't needed separately: writing
+         * mode renders at fit-width, so points-per-pixel is the same in both axes. */
+        val pageWidthsPoints: List<Float>,
         val initialPage: Int,
         val initialZoom: Float,
         val invertColors: Boolean,
@@ -71,14 +75,12 @@ class ReaderViewModel(
                     engine = renderer
                     recentsRepository.updatePageCount(documentId, renderer.pageCount)
                     val recent = recentsRepository.getByUri(uri.toString())
+                    val sizes = (0 until renderer.pageCount).map { index -> renderer.pageSize(index) }
                     _uiState.value =
                         ReaderUiState.Ready(
                             pageCount = renderer.pageCount,
-                            pageAspectRatios =
-                                (0 until renderer.pageCount).map { index ->
-                                    val size = renderer.pageSize(index)
-                                    size.heightPoints / size.widthPoints
-                                },
+                            pageAspectRatios = sizes.map { it.heightPoints / it.widthPoints },
+                            pageWidthsPoints = sizes.map { it.widthPoints },
                             initialPage = recent?.lastPageIndex?.coerceIn(0, renderer.pageCount - 1) ?: 0,
                             initialZoom = recent?.lastZoomScale?.takeIf { it > 0f } ?: 1f,
                             invertColors = true,

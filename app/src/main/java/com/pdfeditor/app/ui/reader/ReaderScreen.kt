@@ -47,7 +47,9 @@ import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import com.pdfeditor.app.domain.Annotation
 import com.pdfeditor.app.ui.theme.OnSurfaceSecondary
+import com.pdfeditor.app.ui.writing.WritingScreen
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
@@ -76,12 +78,13 @@ fun ReaderScreen(
     onPositionChanged: (pageIndex: Int, zoomScale: Float, scrollFraction: Float) -> Unit,
     onClose: () -> Unit,
     onShare: () -> Unit,
+    onSaveCopy: (pageIndex: Int, annotations: List<Annotation>) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Box(modifier = modifier.fillMaxSize().background(Color.Black)) {
         when (uiState) {
             is ReaderUiState.Loading -> Unit
-            is ReaderUiState.Ready -> ReadyReaderContent(uiState, renderPage, onPositionChanged, onClose, onShare)
+            is ReaderUiState.Ready -> ReadyReaderContent(uiState, renderPage, onPositionChanged, onClose, onShare, onSaveCopy)
             is ReaderUiState.PasswordProtected ->
                 CenteredMessage(title = "Password-protected PDF", subtitle = "Encrypted PDFs aren't supported yet")
             is ReaderUiState.Error -> CenteredMessage(title = "Couldn't open this PDF", subtitle = uiState.message)
@@ -96,8 +99,10 @@ private fun ReadyReaderContent(
     onPositionChanged: (Int, Float, Float) -> Unit,
     onClose: () -> Unit,
     onShare: () -> Unit,
+    onSaveCopy: (Int, List<Annotation>) -> Unit,
 ) {
     var mode by remember { mutableStateOf(ReaderMode.READING) }
+    var writingPageIndex by remember { mutableStateOf(state.initialPage) }
     var showOverview by remember { mutableStateOf(false) }
     var showFileActions by remember { mutableStateOf(false) }
     var sliderVisible by remember { mutableStateOf(false) }
@@ -127,14 +132,26 @@ private fun ReadyReaderContent(
                         listState = listState,
                         renderPage = renderPage,
                         onPositionChanged = onPositionChanged,
-                        onModeToggle = { mode = ReaderMode.WRITING },
+                        onModeToggle = {
+                            writingPageIndex = listState.firstVisibleItemIndex
+                            mode = ReaderMode.WRITING
+                        },
                         onRequestOverview = { showOverview = true },
                         onLongPress = { sliderVisible = true },
                         onClose = onClose,
                         onRequestFileActions = { showFileActions = true },
                     )
                 ReaderMode.WRITING ->
-                    WritingModePlaceholder(onModeToggle = { mode = ReaderMode.READING })
+                    WritingScreen(
+                        pageIndex = writingPageIndex,
+                        pageWidthPoints = state.pageWidthsPoints[writingPageIndex],
+                        pageAspectRatio = state.pageAspectRatios[writingPageIndex],
+                        renderPage = renderPage,
+                        invertColors = state.invertColors,
+                        initialAnnotations = emptyList(),
+                        onModeToggle = { mode = ReaderMode.READING },
+                        onSaveCopy = { annotations -> onSaveCopy(writingPageIndex, annotations) },
+                    )
             }
         }
 
