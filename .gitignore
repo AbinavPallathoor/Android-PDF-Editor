@@ -9,3 +9,8 @@ captures/
 .cxx/
 *.hprof
 .kotlin/
+
+# Release signing material must remain local.
+*.jks
+*.keystore
+keystore.properties

@@ -3,6 +3,7 @@ package com.pdfeditor.app.ui.reader
 import android.graphics.Bitmap
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.layout.Arrangement
@@ -41,6 +42,7 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import com.pdfeditor.app.ui.theme.Accent
 import kotlin.math.roundToInt
@@ -76,6 +78,7 @@ fun PageOverviewScreen(
         modifier =
             modifier
                 .fillMaxSize()
+                .testTag("page-overview")
                 .background(Color.Black)
                 .clickable(onClick = onDismiss),
     ) {
@@ -196,7 +199,8 @@ private fun AppendTile(onClick: () -> Unit) {
                 .fillMaxWidth()
                 .aspectRatio(0.75f)
                 .clip(RoundedCornerShape(6.dp))
-                .background(Color(0xFF141414))
+                .background(Color.Black)
+                .border(1.dp, Color.White, RoundedCornerShape(6.dp))
                 .clickable(onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
@@ -221,7 +225,7 @@ private fun OverviewThumbnail(
                 .fillMaxWidth()
                 .aspectRatio(1f / aspectRatio)
                 .clip(RoundedCornerShape(6.dp))
-                .background(Color(0xFF0A0A0A))
+                .background(Color.Black)
                 .clickable(onClick = onClick),
     ) {
         val density = LocalDensity.current
@@ -251,7 +255,7 @@ private fun OverviewThumbnail(
                 Modifier
                     .align(Alignment.BottomEnd)
                     .padding(4.dp)
-                    .background(Color.Black.copy(alpha = 0.55f), RoundedCornerShape(4.dp))
+                    .background(Color.Black, RoundedCornerShape(4.dp))
                     .padding(horizontal = 4.dp, vertical = 1.dp),
         )
 
@@ -263,7 +267,7 @@ private fun OverviewThumbnail(
                         .padding(4.dp)
                         .size(20.dp)
                         .clip(CircleShape)
-                        .background(Color.Black.copy(alpha = 0.65f))
+                        .background(Color.Black)
                         .clickable(onClick = onDelete),
                 contentAlignment = Alignment.Center,
             ) {

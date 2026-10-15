@@ -41,6 +41,12 @@ interface RecentDocumentDao {
         pageCount: Int,
     )
 
+    @Query("UPDATE recent_documents SET displayName = :displayName WHERE id = :id")
+    suspend fun rename(
+        id: Long,
+        displayName: String,
+    )
+
     @Query("UPDATE recent_documents SET isPinned = :isPinned WHERE id = :id")
     suspend fun setPinned(
         id: Long,

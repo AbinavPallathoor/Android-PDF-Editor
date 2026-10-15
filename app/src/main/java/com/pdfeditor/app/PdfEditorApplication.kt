@@ -5,6 +5,7 @@ import androidx.room.Room
 import com.pdfeditor.app.data.db.AppDatabase
 import com.pdfeditor.app.data.db.RoomRecentsRepository
 import com.pdfeditor.app.domain.RecentsRepository
+import com.tom_roush.pdfbox.android.PDFBoxResourceLoader
 
 /**
  * Hand-rolled dependency container instead of a DI framework (Hilt/Dagger) — this is a small,
@@ -17,6 +18,7 @@ class PdfEditorApplication : Application() {
 
     override fun onCreate() {
         super.onCreate()
+        PDFBoxResourceLoader.init(this)
         val database =
             Room.databaseBuilder(this, AppDatabase::class.java, "pdf-editor.db")
                 .build()

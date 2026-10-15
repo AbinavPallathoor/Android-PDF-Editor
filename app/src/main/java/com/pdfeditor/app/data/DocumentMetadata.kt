@@ -14,14 +14,18 @@ fun resolveDocumentMetadata(
     contentResolver: ContentResolver,
     uri: Uri,
 ): DocumentMetadata {
-    contentResolver.query(uri, null, null, null, null)?.use { cursor ->
-        if (cursor.moveToFirst()) {
-            val nameIndex = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
-            val sizeIndex = cursor.getColumnIndex(OpenableColumns.SIZE)
-            val name = if (nameIndex >= 0) cursor.getString(nameIndex) else null
-            val size = if (sizeIndex >= 0 && !cursor.isNull(sizeIndex)) cursor.getLong(sizeIndex) else null
-            if (name != null) return DocumentMetadata(name, size)
+    try {
+        contentResolver.query(uri, null, null, null, null)?.use { cursor ->
+            if (cursor.moveToFirst()) {
+                val nameIndex = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                val sizeIndex = cursor.getColumnIndex(OpenableColumns.SIZE)
+                val name = if (nameIndex >= 0) cursor.getString(nameIndex) else null
+                val size = if (sizeIndex >= 0 && !cursor.isNull(sizeIndex)) cursor.getLong(sizeIndex) else null
+                if (name != null) return DocumentMetadata(name, size)
+            }
         }
+    } catch (_: Exception) {
+        // Metadata is optional: revoked grants/stale providers must not block draft recovery.
     }
     return DocumentMetadata(uri.lastPathSegment ?: "Untitled.pdf", null)
 }

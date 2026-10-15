@@ -63,7 +63,18 @@ class PdfRendererEngine private constructor(
                         val scaleY = into.height.toFloat() / page.height
                         matrix.postScale(scaleX, scaleY)
                     }
-                    page.render(into, null, matrix, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
+                    if (android.os.Build.VERSION.SDK_INT >= 35) {
+                        val parameters =
+                            android.graphics.pdf.RenderParams.Builder(android.graphics.pdf.RenderParams.RENDER_MODE_FOR_DISPLAY)
+                                .setRenderFlags(
+                                    android.graphics.pdf.RenderParams.FLAG_RENDER_TEXT_ANNOTATIONS or
+                                        android.graphics.pdf.RenderParams.FLAG_RENDER_HIGHLIGHT_ANNOTATIONS,
+                                )
+                                .build()
+                        page.render(into, null, matrix, parameters)
+                    } else {
+                        page.render(into, null, matrix, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
+                    }
                 }
             }
         }

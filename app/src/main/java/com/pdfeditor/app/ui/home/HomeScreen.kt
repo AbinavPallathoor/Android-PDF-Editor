@@ -1,5 +1,8 @@
 package com.pdfeditor.app.ui.home
 
+import android.content.ContentResolver
+import android.graphics.Bitmap
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -23,20 +26,31 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberSwipeToDismissBoxState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.pdfeditor.app.data.pdf.loadFirstPageThumbnail
 import com.pdfeditor.app.domain.RecentDocument
 import com.pdfeditor.app.ui.theme.OnSurfaceSecondary
 import com.pdfeditor.app.ui.theme.SurfaceDim
+import com.pdfeditor.app.ui.theme.SurfaceHint
 import java.text.DateFormat
 import java.util.Date
 
 @Composable
 fun HomeScreen(
     recents: List<RecentDocument>,
+    contentResolver: ContentResolver,
     onOpenDocument: () -> Unit,
     onOpenRecent: (RecentDocument) -> Unit,
     onRemoveRecent: (RecentDocument) -> Unit,
@@ -56,6 +70,7 @@ fun HomeScreen(
                     items(recents, key = { it.id }) { doc ->
                         SwipeableRecentRow(
                             document = doc,
+                            contentResolver = contentResolver,
                             onOpen = { onOpenRecent(doc) },
                             onRemove = { onRemoveRecent(doc) },
                         )
@@ -81,6 +96,7 @@ private fun EmptyState(modifier: Modifier = Modifier) {
 @Composable
 private fun SwipeableRecentRow(
     document: RecentDocument,
+    contentResolver: ContentResolver,
     onOpen: () -> Unit,
     onRemove: () -> Unit,
 ) {
@@ -97,7 +113,7 @@ private fun SwipeableRecentRow(
         state = dismissState,
         backgroundContent = { SwipeBackground() },
     ) {
-        RecentRow(document = document, onClick = onOpen)
+        RecentRow(document = document, contentResolver = contentResolver, onClick = onOpen)
     }
 }
 
@@ -107,7 +123,7 @@ private fun SwipeBackground() {
         modifier =
             Modifier
                 .fillMaxSize()
-                .background(MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.3f))
+                .background(SurfaceHint)
                 .padding(horizontal = 24.dp),
     )
 }
@@ -115,6 +131,7 @@ private fun SwipeBackground() {
 @Composable
 private fun RecentRow(
     document: RecentDocument,
+    contentResolver: ContentResolver,
     onClick: () -> Unit,
 ) {
     Column(
@@ -126,7 +143,7 @@ private fun RecentRow(
                 .padding(horizontal = 20.dp, vertical = 14.dp),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Thumbnail()
+            Thumbnail(uri = document.uri, contentResolver = contentResolver)
             Column(modifier = Modifier.padding(start = 14.dp).weight(1f)) {
                 Text(
                     text = document.displayName,
@@ -149,16 +166,35 @@ private fun RecentRow(
 }
 
 @Composable
-private fun Thumbnail() {
-    // Real lazy/cached page thumbnails land in Milestone 2 once rendering exists; a flat
-    // placeholder keeps row layout stable until then.
+private fun Thumbnail(
+    uri: String,
+    contentResolver: ContentResolver,
+) {
+    val density = LocalDensity.current
+    val widthPx = with(density) { 40.dp.roundToPx() }
+    val heightPx = with(density) { 52.dp.roundToPx() }
+    var bitmap by remember(uri) { mutableStateOf<Bitmap?>(null) }
+
+    LaunchedEffect(uri) {
+        bitmap = loadFirstPageThumbnail(contentResolver, android.net.Uri.parse(uri), widthPx, heightPx)
+    }
+
     Box(
         modifier =
             Modifier
                 .size(width = 40.dp, height = 52.dp)
                 .clip(RoundedCornerShape(4.dp))
                 .background(SurfaceDim),
-    )
+    ) {
+        bitmap?.let { bmp ->
+            Image(
+                bitmap = bmp.asImageBitmap(),
+                contentDescription = null,
+                contentScale = ContentScale.FillBounds,
+                modifier = Modifier.fillMaxSize(),
+            )
+        }
+    }
 }
 
 private fun rowSubtitle(document: RecentDocument): String {

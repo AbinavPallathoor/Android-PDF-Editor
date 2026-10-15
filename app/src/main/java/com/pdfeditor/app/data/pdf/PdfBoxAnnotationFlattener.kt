@@ -35,6 +35,13 @@ class PdfBoxAnnotationFlattener : AnnotationFlattener {
                     try {
                         for (annotation in annotations) {
                             when (annotation) {
+                                is com.pdfeditor.app.domain.HighlightAnnotation -> {
+                                    stream.setNonStrokingColor(255, 220, 0)
+                                    for (rect in annotation.rects) {
+                                        stream.addRect(rect.left, pageHeight - rect.bottom, rect.right - rect.left, rect.bottom - rect.top)
+                                        stream.fill()
+                                    }
+                                }
                                 is DrawStroke -> drawStroke(stream, annotation, pageHeight)
                                 is TextBoxAnnotation -> drawText(stream, annotation, pageHeight)
                                 is SignaturePlacement -> drawSignature(stream, annotation, pageHeight)

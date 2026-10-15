@@ -1,54 +1,69 @@
 # PDF Editor
 
-A minimalist, gesture-first Android PDF reader and light editor. The PDF is
-the only thing on screen — dark, no toolbars, no chrome. Every interaction
-(open, zoom, mode switch, undo/redo, page reorder) is a gesture with a
-physics-based animation behind it.
+A minimal, fully offline Android PDF reader and annotation editor. Read the whole
+PDF, then reveal tools only when you need them. Pure-black controls, an unobtrusive
+gradient header, and normal PDF colours keep the document at the centre.
 
-100% free, open source, and offline: no ads, no accounts, no analytics, no
-network access of any kind (the app does not declare the `INTERNET`
-permission), and no proprietary dependencies (no Google Play Services, no
-Firebase). See [`THIRD_PARTY_LICENSES`](THIRD_PARTY_LICENSES) for the full
-dependency list — everything is Apache-2.0, MIT, or BSD.
+[Download the latest APK](https://github.com/AbinavPallathoor/Android-PDF-Editor/releases/latest)
 
-## Status
+- Annotate any page with pen strokes, highlights, text, and reusable signatures.
+- Type directly on the page with the keyboard; selected objects have an outline.
+- Switch between scrolling and page-by-page views, zoom/pan, and copy PDF text.
+- Reorder, delete, or append pages with document-wide undo/redo and draft recovery.
+- Save from the bottom-right corner: create a new file or explicitly replace a writable original.
+- Share the complete annotated PDF while retaining its original text and vectors.
 
-Under active development, milestone by milestone. See
-[`CLAUDE.md`](CLAUDE.md) for the current architecture and milestone list.
+PDF colour inversion and layout are remembered per document. The app has no
+`INTERNET` permission, accounts, ads, analytics, Firebase, or Google Play Services.
+It is Apache-2.0 licensed; dependency and font licenses are in
+[THIRD_PARTY_LICENSES](THIRD_PARTY_LICENSES).
 
-## Requirements
+## Screenshots
 
-- JDK 17+ (the project builds and has been verified against Temurin/OpenJDK 21)
-- Android SDK with platform 36 and build-tools 35.0.0+ installed
-- min SDK 26 (Android 8.0), target/compile SDK 36 (Android 16)
+Screenshots show a synthetic sample document; no personal files are included.
 
-## Building
+| Reading | Inline text |
+| --- | --- |
+| <img src="docs/screenshots/reading.png" width="280" alt="Full-screen PDF reading"> | <img src="docs/screenshots/inline-text.png" width="280" alt="Typing directly on the PDF with the keyboard"> |
+| **Editing** | **Page management** |
+| <img src="docs/screenshots/editing.png" width="280" alt="Black editing tray, selected text outline, and bottom-right Save button"> | <img src="docs/screenshots/pages.png" width="280" alt="Page overview for reordering, deleting and appending"> |
+
+## Build and validate
+
+Requires JDK 21 and Android SDK 36; minimum Android version is 8.0 (API 26).
+On this machine set `JAVA_HOME=/opt/homebrew/opt/openjdk@21` before Gradle.
 
 ```sh
 ./gradlew assembleDebug
-```
-
-## Running on an emulator or device
-
-```sh
 ./gradlew installDebug
-adb shell am start -n com.pdfeditor.app/.MainActivity
+./gradlew test ktlintCheck
+./gradlew connectedDebugAndroidTest  # running emulator/device required
+./gradlew assembleRelease
 ```
 
-## Testing
+Tests cover document-wide history, page identity, draft recovery, editable PDF
+round-trips, source conflicts, incoming file intents, real multipage editing and
+saving, text selection, layouts, pinch cancellation, and rotated/cropped pages.
+See the [v0.2.0 validation](docs/validation/2026-10-16-v020.md) and
+[PDF validation record](docs/validation/2026-10-15-multipage-editor.md) for test
+results, screenshots, manual save checks, and coverage limits.
 
-```sh
-./gradlew test                 # JVM unit tests (Robolectric-backed where needed)
-./gradlew connectedAndroidTest # instrumented tests, requires a running emulator/device
-```
+## Current limits
 
-## Linting / formatting
-
-```sh
-./gradlew ktlintCheck
-./gradlew ktlintFormat
-```
+- Annotations created by this app can be edited again. Other applications'
+  annotations are preserved, but are not imported into this app's editable model.
+- Android's platform renderer omits some annotation types, especially foreign
+  Ink. App-owned annotations are displayed with the editor's own overlay;
+  text/highlight rendering flags are enabled on API 35+. Some simple external
+  viewers may likewise omit editable annotations; standards-aware viewers such
+  as PDFKit render the saved appearance streams.
+- Copying requires an existing text layer. OCR and encrypted PDFs are not supported.
+- The bundled font supports common Latin, Greek, and Cyrillic text. Unsupported
+  glyphs produce a save error with the draft retained; complex-script shaping
+  has not been validated.
+- SAF providers control replacement semantics; replacement cannot be guaranteed
+  atomic across every provider. Drafts/backups are retained on failure.
 
 ## License
 
-Apache License 2.0 — see [`LICENSE`](LICENSE).
+Apache License 2.0 — see [LICENSE](LICENSE).

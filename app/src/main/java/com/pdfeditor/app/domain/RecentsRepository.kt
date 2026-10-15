@@ -31,6 +31,12 @@ interface RecentsRepository {
         pageCount: Int,
     )
 
+    /** Renames the display name shown in the app only - never touches the underlying file. */
+    suspend fun rename(
+        id: Long,
+        displayName: String,
+    )
+
     /** Removes the row from recents. Never touches the underlying file. */
     suspend fun remove(id: Long)
 

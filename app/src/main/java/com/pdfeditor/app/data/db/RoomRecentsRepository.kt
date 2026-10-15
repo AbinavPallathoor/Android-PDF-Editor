@@ -54,6 +54,11 @@ class RoomRecentsRepository(
         pageCount: Int,
     ) = dao.updatePageCount(id, pageCount)
 
+    override suspend fun rename(
+        id: Long,
+        displayName: String,
+    ) = dao.rename(id, displayName)
+
     override suspend fun remove(id: Long) = dao.deleteById(id)
 
     override suspend fun setPinned(

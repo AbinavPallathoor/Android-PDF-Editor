@@ -28,7 +28,7 @@ AndroidX Core, Lifecycle, Activity, Navigation Compose
   License: Apache License 2.0
   https://developer.android.com/jetpack/androidx
 
-Jetpack Compose (UI, Foundation, Material3)
+Jetpack Compose (UI, Foundation, Material3, Material Icons Core)
   Copyright The Android Open Source Project
   License: Apache License 2.0
   https://developer.android.com/jetpack/compose
@@ -87,3 +87,11 @@ Notes
   See the project plan for the full rationale; this file will be updated if
   that changes in a future milestone.
 - This file is updated whenever a dependency is added, removed, or upgraded.
+
+Roboto Regular (bundled font)
+  License: Apache-2.0
+  Source: https://github.com/googlefonts/roboto/tree/38062f4b4a0be4346d07a928408da21602545e9e
+  Asset: src/hinted/Roboto-Regular.ttf (unmodified)
+  SHA-256: 56a45233d29f11b4dfb86d248e921939d115778f87325e7ae8cc108383d6664d
+  Copyright 2015 Google Inc. All Rights Reserved.
+  License copy: app/src/main/assets/fonts/LICENSE-Roboto.txt

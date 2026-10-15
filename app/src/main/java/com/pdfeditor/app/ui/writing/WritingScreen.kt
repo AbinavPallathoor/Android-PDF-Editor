@@ -1,9 +1,6 @@
 package com.pdfeditor.app.ui.writing
 
 import android.graphics.Bitmap
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.slideInVertically
-import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -53,6 +50,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChanged
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.input.ImeAction
@@ -61,14 +59,17 @@ import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.pdfeditor.app.data.cache.SavedSignature
+import com.pdfeditor.app.data.cache.SignatureRepository
 import com.pdfeditor.app.domain.Annotation
 import com.pdfeditor.app.domain.DrawStroke
 import com.pdfeditor.app.domain.PdfPoint
 import com.pdfeditor.app.domain.SignaturePlacement
 import com.pdfeditor.app.domain.TextBoxAnnotation
 import com.pdfeditor.app.ui.theme.Accent
+import com.pdfeditor.app.ui.theme.OnSurfaceSecondary
 import com.pdfeditor.app.ui.theme.SurfaceElevated
-import kotlinx.coroutines.delay
+import java.io.File
 import kotlin.math.roundToInt
 
 private val InvertFilter =
@@ -104,8 +105,13 @@ fun WritingScreen(
     onSaveCopy: (List<Annotation>) -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val context = LocalContext.current
+    // Signatures are saved app-wide (not per-page/per-document), so the repository is keyed by a
+    // fixed file rather than `pageIndex` - deliberately not `remember(pageIndex)`'d alongside the
+    // viewModel below, which IS per-page.
+    val signatureRepository = remember { SignatureRepository(File(context.filesDir, "signatures.json")) }
     val viewModel: WritingViewModel =
-        viewModel(key = "writing-$pageIndex", factory = WritingViewModel.Factory(initialAnnotations))
+        viewModel(key = "writing-$pageIndex", factory = WritingViewModel.Factory(initialAnnotations, signatureRepository))
     val density = LocalDensity.current
     val modeSwipeThresholdPx = with(density) { 96.dp.toPx() }
 
@@ -120,18 +126,6 @@ fun WritingScreen(
         if (canvasSizePx.width > 0 && canvasSizePx.height > 0) {
             pageBitmap = renderPage(pageIndex, canvasSizePx.width.roundToInt(), canvasSizePx.height.roundToInt())
         }
-    }
-
-    var trayVisible by remember { mutableStateOf(true) }
-    var interactionTick by remember { mutableStateOf(0) }
-
-    fun pokeInteraction() {
-        trayVisible = true
-        interactionTick++
-    }
-    LaunchedEffect(interactionTick) {
-        delay(4000)
-        trayVisible = false
     }
 
     var draggingId by remember { mutableStateOf<String?>(null) }
@@ -164,14 +158,12 @@ fun WritingScreen(
                             }
                         },
                         onDrawStroke = { screenPoints ->
-                            pokeInteraction()
                             val pdfPoints = screenPoints.map { transform.screenToPdf(it) }
                             viewModel.addAnnotation(DrawStroke(newId(), pdfPoints, strokeColorArgb, strokeWidthPoints))
                         },
                         onDragAnnotation = { id, pos ->
                             draggingId = id
                             draggingScreenPos = pos
-                            pokeInteraction()
                         },
                         onDragEnd = { id ->
                             val newPos = transform.screenToPdf(draggingScreenPos)
@@ -183,11 +175,6 @@ fun WritingScreen(
                             draggingId = null
                         },
                         onTap = { screenPos ->
-                            if (!trayVisible) {
-                                pokeInteraction()
-                                return@writingGestures
-                            }
-                            pokeInteraction()
                             val pdfPoint = transform.screenToPdf(screenPos)
                             when (viewModel.selectedTool) {
                                 WritingTool.TEXT -> {
@@ -197,8 +184,8 @@ fun WritingScreen(
                                     textEditor = TextEditorState(hit?.id, hit?.text ?: "", screenPos)
                                 }
                                 WritingTool.SIGN -> {
-                                    viewModel.savedSignature?.let { saved ->
-                                        viewModel.addAnnotation(SignaturePlacement(newId(), pdfPoint, saved, 1f, strokeColorArgb))
+                                    viewModel.activeSignature?.let { saved ->
+                                        viewModel.addAnnotation(SignaturePlacement(newId(), pdfPoint, saved.strokes, 1f, strokeColorArgb))
                                     }
                                 }
                                 WritingTool.ERASE -> {
@@ -207,14 +194,8 @@ fun WritingScreen(
                                 else -> Unit
                             }
                         },
-                        onUndo = {
-                            pokeInteraction()
-                            viewModel.undo()
-                        },
-                        onRedo = {
-                            pokeInteraction()
-                            viewModel.redo()
-                        },
+                        onUndo = { viewModel.undo() },
+                        onRedo = { viewModel.redo() },
                         onModeSwipe = onModeToggle,
                         modeSwipeThresholdPx = modeSwipeThresholdPx,
                     ),
@@ -240,6 +221,7 @@ fun WritingScreen(
                                 transform.pdfLengthToScreenPx(annotation.strokeWidthPoints),
                             )
                         }
+                        is com.pdfeditor.app.domain.HighlightAnnotation -> Unit
                         is TextBoxAnnotation -> Unit // drawn via overlay Text composables below, not Canvas
                         is SignaturePlacement -> {
                             val origin = if (annotation.id == draggingId) transform.screenToPdf(draggingScreenPos) else annotation.position
@@ -305,28 +287,25 @@ fun WritingScreen(
             )
         }
 
-        AnimatedVisibility(
-            visible = trayVisible,
-            enter = slideInVertically(initialOffsetY = { it }),
-            exit = slideOutVertically(targetOffsetY = { it }),
-            modifier = Modifier.align(Alignment.BottomCenter),
-        ) {
+        if (viewModel.showSignaturePicker) {
+            SignaturePickerOverlay(
+                signatures = viewModel.savedSignatures,
+                onPick = { index -> viewModel.pickSignature(index) },
+                onDrawNew = { viewModel.startDrawingNewSignature() },
+                onDismiss = { viewModel.dismissSignaturePicker() },
+            )
+        }
+
+        // Kept permanently visible per user preference - was previously an idle-timeout
+        // AnimatedVisibility (see CLAUDE.md's now-removed "tool tray auto-hides after 4s" note).
+        Box(modifier = Modifier.align(Alignment.BottomCenter)) {
             ToolTray(
                 selectedTool = viewModel.selectedTool,
-                onSelectTool = {
-                    viewModel.selectTool(it)
-                    pokeInteraction()
-                },
+                onSelectTool = { viewModel.selectTool(it) },
                 strokeColorArgb = strokeColorArgb,
-                onSelectColor = {
-                    strokeColorArgb = it
-                    pokeInteraction()
-                },
+                onSelectColor = { strokeColorArgb = it },
                 strokeWidthPoints = strokeWidthPoints,
-                onSelectWidth = {
-                    strokeWidthPoints = it
-                    pokeInteraction()
-                },
+                onSelectWidth = { strokeWidthPoints = it },
                 onSave = { onSaveCopy(viewModel.annotations) },
             )
         }
@@ -393,6 +372,10 @@ private fun SignatureDrawingOverlay(
 ) {
     var boxSize by remember { mutableStateOf(Size.Zero) }
     var strokes by remember { mutableStateOf<List<List<Offset>>>(emptyList()) }
+    // The stroke currently being drawn, updated on every pointer-move event (not just once at
+    // lift) so the canvas redraws live while the finger is still down - previously `onStroke` only
+    // fired after the gesture ended, so nothing appeared on screen until the user let go.
+    var liveStroke by remember { mutableStateOf<List<Offset>>(emptyList()) }
 
     Box(
         modifier = Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.75f)),
@@ -408,10 +391,17 @@ private fun SignatureDrawingOverlay(
                         .clip(RoundedCornerShape(12.dp))
                         .background(Color.White)
                         .onSizeChanged { boxSize = Size(it.width.toFloat(), it.height.toFloat()) }
-                        .signatureDrawingInput(onStroke = { path -> strokes = strokes + listOf(path) }),
+                        .signatureDrawingInput(
+                            onStrokeUpdate = { liveStroke = it },
+                            onStrokeEnd = { finished ->
+                                if (finished.size >= 2) strokes = strokes + listOf(finished)
+                                liveStroke = emptyList()
+                            },
+                        ),
             ) {
                 Canvas(modifier = Modifier.fillMaxSize()) {
                     for (path in strokes) drawPolyline(path, Color.Black, 4f)
+                    if (liveStroke.size >= 2) drawPolyline(liveStroke, Color.Black, 4f)
                 }
             }
             Row(modifier = Modifier.padding(top = 20.dp), horizontalArrangement = Arrangement.spacedBy(32.dp)) {
@@ -430,11 +420,72 @@ private fun SignatureDrawingOverlay(
     }
 }
 
-private fun Modifier.signatureDrawingInput(onStroke: (List<Offset>) -> Unit): Modifier =
+/** Shown when the Sign tool is tapped and at least one signature is already saved - pick one to reuse, or draw a new one. */
+@Composable
+private fun SignaturePickerOverlay(
+    signatures: List<SavedSignature>,
+    onPick: (Int) -> Unit,
+    onDrawNew: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    Box(
+        modifier =
+            Modifier
+                .fillMaxSize()
+                .background(Color.Black.copy(alpha = 0.75f))
+                .clickable(onClick = onDismiss),
+        contentAlignment = Alignment.Center,
+    ) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Text("Choose a signature", color = Color.White, style = MaterialTheme.typography.titleMedium)
+            Row(
+                modifier = Modifier.padding(top = 16.dp),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                for ((index, signature) in signatures.withIndex()) {
+                    Box(
+                        modifier =
+                            Modifier
+                                .size(width = 100.dp, height = 56.dp)
+                                .clip(RoundedCornerShape(10.dp))
+                                .background(Color.White)
+                                // Swallow the tap so it doesn't fall through to the scrim behind it.
+                                .clickable(onClick = { onPick(index) }),
+                    ) {
+                        Canvas(modifier = Modifier.fillMaxSize()) {
+                            val scaleX = size.width / 200f
+                            val scaleY = size.height / 80f
+                            for (path in signature.strokes) {
+                                drawPolyline(path.map { Offset(it.x * scaleX, it.y * scaleY) }, Color.Black, 2.5f)
+                            }
+                        }
+                    }
+                }
+                Box(
+                    modifier =
+                        Modifier
+                            .size(width = 100.dp, height = 56.dp)
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(SurfaceElevated)
+                            .clickable(onClick = onDrawNew),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text("+ New", color = Color.White, style = MaterialTheme.typography.bodyMedium)
+                }
+            }
+        }
+    }
+}
+
+private fun Modifier.signatureDrawingInput(
+    onStrokeUpdate: (List<Offset>) -> Unit,
+    onStrokeEnd: (List<Offset>) -> Unit,
+): Modifier =
     this.pointerInput(Unit) {
         awaitEachGesture {
             val down = awaitFirstDown()
             val points = mutableListOf(down.position)
+            onStrokeUpdate(points.toList())
             var pressed = true
             while (pressed) {
                 val event = awaitPointerEvent()
@@ -442,10 +493,11 @@ private fun Modifier.signatureDrawingInput(onStroke: (List<Offset>) -> Unit): Mo
                 if (change.positionChanged()) {
                     points.add(change.position)
                     change.consume()
+                    onStrokeUpdate(points.toList())
                 }
                 pressed = event.changes.any { it.pressed }
             }
-            if (points.size >= 2) onStroke(points)
+            onStrokeEnd(points.toList())
         }
     }
 
@@ -474,7 +526,9 @@ private fun ToolTray(
                 horizontalArrangement = Arrangement.spacedBy(12.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                for (swatch in listOf(Color.Black, Color.White, Color(0xFFE53935), Accent)) {
+                // Ink color choices for the user's own drawing - independent of the app's own
+                // Accent (interactive/selected-state) color, which they're unrelated concepts.
+                for (swatch in listOf(Color.Black, Color.White, Color(0xFFE53935), OnSurfaceSecondary)) {
                     val isSelected = swatch.toArgb() == strokeColorArgb
                     Box(
                         modifier =
