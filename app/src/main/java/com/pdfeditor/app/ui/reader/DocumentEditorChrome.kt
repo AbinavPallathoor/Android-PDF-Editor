@@ -40,6 +40,8 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.vector.PathParser
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.selected
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -155,7 +157,8 @@ internal fun DocumentEditingTray(
                         toolGlyph(entry),
                         entry.label,
                         { onTool(entry) },
-                        Modifier.testTag("tool-${entry.name}"),
+                        // Expose the active tool to accessibility services, not only as a ring.
+                        Modifier.testTag("tool-${entry.name}").semantics { selected = tool == entry },
                         selected = tool == entry,
                     )
                 }

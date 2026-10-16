@@ -1091,7 +1091,7 @@ private fun EditorDocument(
                     finishEditing()
                 } else {
                     editing = true
-                    tool = EditorTool.DRAW
+                    tool = EditorTool.HAND
                     chromeVisible = false
                     chromeTick++
                 }

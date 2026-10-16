@@ -13,6 +13,8 @@ import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.assert
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertIsNotSelected
+import androidx.compose.ui.test.assertIsSelected
 import androidx.compose.ui.test.captureToImage
 import androidx.compose.ui.test.getUnclippedBoundsInRoot
 import androidx.compose.ui.test.hasText
@@ -392,6 +394,9 @@ class MultipageEditorTest {
         compose.onNodeWithTag("layout-toggle").assertDoesNotExist()
         compose.onNodeWithTag("toggle-editing").performClick()
         compose.onNodeWithTag("tool-DRAW").assertIsDisplayed()
+        // Writing starts with Hand so the first touch never leaves an unintended mark.
+        compose.onNodeWithTag("tool-HAND").assertIsSelected()
+        compose.onNodeWithTag("tool-DRAW").assertIsNotSelected()
         compose.onNodeWithTag("ink-colors").assertDoesNotExist()
         compose.onNodeWithTag("ink-options").performClick()
         compose.onNodeWithTag("ink-colors").assertIsDisplayed()
