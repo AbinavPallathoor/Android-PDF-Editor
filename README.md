@@ -1,89 +1,151 @@
 # PDF Editor
 
-A minimal, fully offline Android PDF reader and annotation editor. Read the whole
-PDF, then reveal tools only when you need them. Pure-black controls, an unobtrusive
-compact black header, and normal PDF colours keep the document at the centre.
+A minimal, fully offline PDF reader and editor for Android. The document fills
+the screen; tools appear only when you ask for them. Pure-black controls and
+normal PDF colours keep the page at the centre.
 
-[Download the latest APK](https://github.com/AbinavPallathoor/Android-PDF-Editor/releases/latest)
+**[Download the latest APK](https://github.com/AbinavPallathoor/Android-PDF-Editor/releases/latest)**
+· Android 8.0+ · No internet permission · Apache-2.0
 
-- Annotate any page with pen strokes, highlights, text, and reusable signatures.
-- Type directly on the page; resize selected text boxes and signatures with corner handles.
-- Use Hand while editing to select and move drawings, signatures, and text.
-- Tap Fill or Sign hints in detected empty fields to type in place or insert a fitted signature.
-- Change text colour and fonts from the contextual tray. Sans, Serif, and Mono are included; import additional static TrueType fonts locally.
-- Switch between scrolling and page-by-page views, zoom/pan, and copy PDF text.
-- Swipe the document title to move between recent PDFs, with drafts kept intact.
-- At the start of a document, the header appears automatically above the PDF.
-- Drag the curved edge scrollbar to browse pages; its page number appears above the handle.
-- Open a bottom panel for page/view and file controls; rename directly in its title.
-- Reorder or delete pages, or add an entire PDF or selected pages, with document-wide undo/redo and draft recovery.
-- Save from the bottom-right corner: create a new file, explicitly replace a writable original, or discard all changes.
-- Unsaved work remains editable in a private draft. Closing or switching PDFs never writes to the original.
-- PDFs handed off with temporary access are kept as imported copies in Recents; their external originals stay unchanged.
-- Share the complete annotated PDF while retaining its original text and vectors.
+<img src="docs/screenshots/reading.png" width="260" alt="Full-screen PDF reading"> <img src="docs/screenshots/editing.png" width="260" alt="Black editing tray with a selected text box"> <img src="docs/screenshots/pages.png" width="260" alt="Page overview for reordering and deleting pages">
 
-PDF colour inversion and layout are remembered per document. The app has no
-`INTERNET` permission, accounts, ads, analytics, Firebase, or Google Play Services.
-It is Apache-2.0 licensed; dependency and font licenses are in
-[THIRD_PARTY_LICENSES](THIRD_PARTY_LICENSES).
+## Highlights
 
-## Screenshots
+- **Fill and sign forms fast.** While editing, empty form fields get tap-to-fill
+  hints. That includes real form fields, printed boxes and lines, and typed
+  blanks like `Name: ______`. Tap to type in place or drop in a fitted signature.
+- **Annotate anything.** Pen, highlighter, text and reusable signatures, all
+  movable and resizable, with document-wide undo/redo.
+- **Rearrange documents.** Reorder or delete pages, append another PDF, or pick
+  individual pages from one.
+- **Your original is safe.** Edits live in a private draft until you save, and
+  saving makes a new file unless you explicitly choose to replace the original.
+- **Private by design.** Fully offline. No accounts, ads, analytics, Firebase or
+  Google Play Services.
 
-Screenshots show a synthetic sample document; no personal files are included. The gallery was captured for v0.2.2; the current header is solid black.
+## Features
 
-| Reading | Inline text |
+### Reading
+
+- Scrolling or page-by-page layouts, pinch zoom and pan, and text selection and copying.
+- A curved edge scrollbar for fast browsing, showing the page number above its handle.
+- Swipe the document title to move between recent PDFs; drafts stay intact.
+- Rendered pages are cached on the device, so reopening and switching documents is quick.
+- Dark-friendly colour inversion and layout are remembered per document.
+
+### Editing
+
+Tap the pencil in the header to edit. Write mode starts on **Hand**, so your
+first touch selects, moves or scrolls rather than leaving a mark.
+
+| Tool | What it does |
 | --- | --- |
-| <img src="docs/screenshots/reading.png" width="280" alt="Full-screen PDF reading"> | <img src="docs/screenshots/inline-text.png" width="280" alt="Typing directly on the PDF with the keyboard"> |
-| **Document controls** | **Editing** |
-| <img src="docs/screenshots/document-options.png" width="280" alt="Separate page, view, share and compress controls"> | <img src="docs/screenshots/editing.png" width="280" alt="Black editing tray, selected text outline, and bottom-right Save button"> |
-| **Text styling** | **Page management** |
-| <img src="docs/screenshots/text-style.png" width="280" alt="Contextual font selection and local font import"> | <img src="docs/screenshots/pages.png" width="280" alt="Page overview for reordering, deleting and appending"> |
-| **Selected-page import** | **Edge navigation** |
-| <img src="docs/screenshots/import-pages.png" width="280" alt="Choosing individual pages from another PDF"> | <img src="docs/screenshots/page-scrollbar.png" width="280" alt="Curved edge scrollbar with the current page above its handle"> |
+| Hand | Select and move drawings, text and signatures; drag corner handles to resize text boxes and signatures; tap Fill/Sign hints. |
+| Pen / Highlight | Freehand ink and translucent highlights, in your chosen colour. |
+| Text | Type directly on the page. Sans, Serif and Mono are bundled; import static TrueType fonts locally. |
+| Sign | Draw a signature once, reuse it anywhere; it scales without distortion. |
+| Erase | Remove an annotation with a tap. |
 
-## Build and validate
+Annotations you add stay editable after saving and reopening.
 
-Requires JDK 21 and Android SDK 36; minimum Android version is 8.0 (API 26).
-On this machine set `JAVA_HOME=/opt/homebrew/opt/openjdk@21` before Gradle.
+### Fill suggestions
+
+In Hand mode, the app looks for places to write and shows small dashed hints:
+
+- **Form fields:** empty, editable text and signature fields built into the PDF.
+- **Printed blanks:** boxes, lines and typed underscore runs next to a
+  recognised English label such as *Name*, *Date*, *Email*, *Address*, *Phone*
+  or *Signature*.
+
+Tap **Fill** to type in the field, or **Sign** to place your signature fitted
+inside it. A hint disappears once something fills its field, and returns if you
+undo. Detection is deliberately cautious: scanned pages (no OCR), unlabelled
+lines and anything already filled are skipped. Hints add ordinary editable
+annotations; they don't change form-field data or create certificate signatures.
+
+### Pages and files
+
+- Page overview to reorder or delete pages; append a whole PDF or selected pages.
+- Save as a new file, explicitly replace a writable original, or discard all changes.
+- Share the complete annotated PDF with its original text and vectors intact.
+- Rename from the document panel; PDFs shared from other apps are kept as
+  private imported copies so they stay in Recents.
+
+## Install
+
+1. Download `PDF-Editor-v<version>.apk` from the
+   [latest release](https://github.com/AbinavPallathoor/Android-PDF-Editor/releases/latest).
+2. Open it on your phone and allow installing from that source when prompted.
+
+Every release is signed with the same key, so new versions install over older
+ones and keep your recents, drafts and signatures. Each release lists the APK's
+SHA-256 checksum.
+
+## Privacy and storage
+
+The app has no `INTERNET` permission and makes no network calls. Files are
+opened through Android's system file picker, with no broad storage permission.
+
+Everything stays on the device:
+
+- **Drafts:** your unsaved edits, kept privately until you save or discard them.
+  Closing or switching documents never writes to the original file.
+- **Working copies:** private copies of opened PDFs. A copy with no annotations or
+  page changes is removed after 10 days unused; the next open re-imports it.
+- **Caches:** rendered pages and file fingerprints expire 10 days after last use.
+  Android may also clear them early when storage is low, which only costs a
+  re-render.
+
+## Limits
+
+- Password-protected PDFs and OCR are not supported. Copying text requires an
+  existing text layer.
+- Annotations made by other apps are preserved but can't be edited here.
+  Android's renderer omits some foreign annotation types (notably ink); this
+  app's own annotations are always drawn.
+- Some simple PDF viewers may not display editable annotations. Standards-aware
+  viewers such as Apple's PDFKit show them.
+- Bundled fonts cover Latin, Greek and Cyrillic. Imported fonts must be static
+  TrueType (`.ttf`, or `.otf` with TrueType outlines) up to 16 MiB. Variable
+  fonts, CFF and font collections aren't supported, and complex-script shaping
+  is unvalidated. Characters a font can't draw stop the save with your draft kept.
+- Replacing an original depends on the storage provider and can't be guaranteed
+  atomic everywhere; drafts and backups are kept if it fails.
+
+## More screenshots
+
+Captured with a synthetic sample document for v0.2.2. Today's header is solid
+black, and newer features such as fill hints aren't pictured.
+
+| Inline text | Document controls | Text styling |
+| --- | --- | --- |
+| <img src="docs/screenshots/inline-text.png" width="240" alt="Typing directly on the PDF with the keyboard"> | <img src="docs/screenshots/document-options.png" width="240" alt="Page, view, share and compress controls"> | <img src="docs/screenshots/text-style.png" width="240" alt="Font selection and local font import"> |
+| **Selected-page import** | **Edge scrollbar** | |
+| <img src="docs/screenshots/import-pages.png" width="240" alt="Choosing individual pages from another PDF"> | <img src="docs/screenshots/page-scrollbar.png" width="240" alt="Curved edge scrollbar with the current page above its handle"> | |
+
+## Build from source
+
+Requires JDK 21 and Android SDK 36 (`compileSdk`/`targetSdk` 36, `minSdk` 26).
 
 ```sh
-./gradlew assembleDebug
-./gradlew installDebug
-./gradlew test ktlintCheck
-./gradlew connectedDebugAndroidTest  # running emulator/device required
-./gradlew assembleRelease
+./gradlew assembleDebug                # debug APK
+./gradlew installDebug                 # install on a running device/emulator
+./gradlew test ktlintCheck             # JVM tests and lint
+./gradlew connectedDebugAndroidTest    # UI tests (device/emulator required)
+./gradlew assembleRelease              # optimized, unsigned release APK
 ```
 
 Tests cover document-wide history, page identity, draft recovery, editable PDF
-round-trips, source conflicts, incoming file intents, real multipage editing and
-saving, text selection, layouts, pinch cancellation, and rotated/cropped pages.
-See the [field suggestions validation](docs/validation/2026-10-16-v024.md),
-[v0.2.3 validation](docs/validation/2026-10-16-v023.md),
-[document controls validation](docs/validation/2026-10-16-document-controls.md),
-[v0.2.1 validation](docs/validation/2026-10-16-v021.md),
-[v0.2.0 validation](docs/validation/2026-10-16-v020.md) and
-[PDF validation record](docs/validation/2026-10-15-multipage-editor.md) for test
-results, screenshots, manual save checks, and coverage limits.
+round-trips, source conflicts, incoming file intents, multipage editing and
+saving, field detection, caching and expiry, layouts, and rotated/cropped pages.
+Per-release results and coverage limits are recorded in
+[docs/validation](docs/validation), most recently
+[v0.2.4](docs/validation/2026-10-16-v024.md).
 
-## Current limits
-
-- Annotations created by this app can be edited again. Other applications'
-  annotations are preserved, but are not imported into this app's editable model.
-- Android's platform renderer omits some annotation types, especially foreign
-  Ink. App-owned annotations are displayed with the editor's own overlay;
-  text/highlight rendering flags are enabled on API 35+. Some simple external
-  viewers may likewise omit editable annotations; standards-aware viewers such
-  as PDFKit render the saved appearance streams.
-- Copying requires an existing text layer. OCR and encrypted PDFs are not supported.
-- Fill hints detect empty text/signature widgets and conservatively match English labels to printed vector boxes/lines or typed underscore blanks (`Name: ______`). Scans and uncertain or clipped printed geometry are skipped. Hints place editable annotations; they do not update AcroForm data values or create certificate signatures.
-- Bundled fonts support common Latin, Greek, and Cyrillic text. Extra fonts
-  can be imported as static TrueType (.ttf or TrueType-outline .otf) files up to
-  16 MiB. Variable fonts, CFF, font collections, and web fonts are unsupported.
-  Unsupported glyphs produce a save error with the draft retained; complex-script
-  shaping has not been validated. Custom fonts are embedded for editable reopening.
-- SAF providers control replacement semantics; replacement cannot be guaranteed
-  atomic across every provider. Drafts/backups are retained on failure.
+Architecture notes for contributors are in [AGENTS.md](AGENTS.md).
 
 ## License
 
-Apache License 2.0 — see [LICENSE](LICENSE).
+Apache License 2.0; see [LICENSE](LICENSE). Dependency and font licenses are in
+[THIRD_PARTY_LICENSES](THIRD_PARTY_LICENSES). Every dependency is
+Apache-2.0, MIT or BSD licensed.
