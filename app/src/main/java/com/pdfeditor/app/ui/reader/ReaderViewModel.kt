@@ -11,6 +11,7 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.pdfeditor.app.data.cache.DocumentDraft
 import com.pdfeditor.app.data.cache.DocumentDraftStore
+import com.pdfeditor.app.data.fonts.FontRepository
 import com.pdfeditor.app.data.pdf.PdfBoxCompressor
 import com.pdfeditor.app.data.pdf.PdfBoxDocumentContent
 import com.pdfeditor.app.data.pdf.PdfRendererEngine
@@ -90,7 +91,8 @@ class ReaderViewModel(
     private val _uiState = MutableStateFlow<ReaderUiState>(ReaderUiState.Loading)
     val uiState: StateFlow<ReaderUiState> = _uiState
     private val operation = Mutex()
-    private val content = PdfBoxDocumentContent()
+    private val fonts = FontRepository(requireNotNull(workingCopiesDir.parentFile))
+    private val content = PdfBoxDocumentContent(fonts)
     private val sessionDir =
         File(
             workingCopiesDir,
@@ -172,6 +174,25 @@ class ReaderViewModel(
                 val pages = List(count) { DocumentPage(UUID.randomUUID().toString(), it) }
                 edits = DocumentEdits(DocumentSnapshot(pages, annotations.mapKeys { pages[it.key].id }))
                 withContext(Dispatchers.IO) { incoming.delete() }
+            }
+            val referencedFonts =
+                edits!!.current.annotations.values.flatten().filterIsInstance<TextBoxAnnotation>().map { it.fontId }.toSet()
+            val needsFonts = withContext(Dispatchers.IO) { referencedFonts.any { !fonts.contains(it) } }
+            if (needsFonts) {
+                // Draft bases deliberately omit owned appearances; restore original embedded fonts
+                // from an independent source snapshot, without replacing any recovered edits.
+                val fontSource = File(sessionDir, "font-recovery-${UUID.randomUUID()}.pdf")
+                try {
+                    withContext(Dispatchers.IO) {
+                        contentResolver.openInputStream(uri)?.use { input -> fontSource.outputStream().use { input.copyTo(it) } }
+                    }
+                    if (fontSource.isFile) content.readAnnotations(fontSource)
+                } catch (failure: Exception) {
+                    if (failure is kotlinx.coroutines.CancellationException) throw failure
+                    // The editor keeps the draft and offers font import when recovery is impossible.
+                } finally {
+                    withContext(Dispatchers.IO) { fontSource.delete() }
+                }
             }
             openRenderer()
             val recent = recentsRepository.getByUri(uri.toString())

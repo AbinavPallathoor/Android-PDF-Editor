@@ -7,8 +7,11 @@ gradient header, and normal PDF colours keep the document at the centre.
 [Download the latest APK](https://github.com/AbinavPallathoor/Android-PDF-Editor/releases/latest)
 
 - Annotate any page with pen strokes, highlights, text, and reusable signatures.
-- Type directly on the page with the keyboard; selected objects have an outline.
+- Type directly on the page; resize selected text boxes with corner handles.
+- Change text colour and fonts from the contextual tray. Sans, Serif, and Mono are included; import additional static TrueType fonts locally.
 - Switch between scrolling and page-by-page views, zoom/pan, and copy PDF text.
+- Swipe the document title to move between recent PDFs, with drafts kept intact.
+- At the start of a document, the header appears automatically above the PDF.
 - Reorder, delete, or append pages with document-wide undo/redo and draft recovery.
 - Save from the bottom-right corner: create a new file or explicitly replace a writable original.
 - Share the complete annotated PDF while retaining its original text and vectors.
@@ -25,8 +28,10 @@ Screenshots show a synthetic sample document; no personal files are included.
 | Reading | Inline text |
 | --- | --- |
 | <img src="docs/screenshots/reading.png" width="280" alt="Full-screen PDF reading"> | <img src="docs/screenshots/inline-text.png" width="280" alt="Typing directly on the PDF with the keyboard"> |
-| **Editing** | **Page management** |
-| <img src="docs/screenshots/editing.png" width="280" alt="Black editing tray, selected text outline, and bottom-right Save button"> | <img src="docs/screenshots/pages.png" width="280" alt="Page overview for reordering, deleting and appending"> |
+| **Document controls** | **Editing** |
+| <img src="docs/screenshots/document-options.png" width="280" alt="Separate page, view, share and compress controls"> | <img src="docs/screenshots/editing.png" width="280" alt="Black editing tray, selected text outline, and bottom-right Save button"> |
+| **Text styling** | **Page management** |
+| <img src="docs/screenshots/text-style.png" width="280" alt="Contextual font selection and local font import"> | <img src="docs/screenshots/pages.png" width="280" alt="Page overview for reordering, deleting and appending"> |
 
 ## Build and validate
 
@@ -44,7 +49,8 @@ On this machine set `JAVA_HOME=/opt/homebrew/opt/openjdk@21` before Gradle.
 Tests cover document-wide history, page identity, draft recovery, editable PDF
 round-trips, source conflicts, incoming file intents, real multipage editing and
 saving, text selection, layouts, pinch cancellation, and rotated/cropped pages.
-See the [v0.2.0 validation](docs/validation/2026-10-16-v020.md) and
+See the [v0.2.1 validation](docs/validation/2026-10-16-v021.md),
+[v0.2.0 validation](docs/validation/2026-10-16-v020.md) and
 [PDF validation record](docs/validation/2026-10-15-multipage-editor.md) for test
 results, screenshots, manual save checks, and coverage limits.
 
@@ -58,9 +64,11 @@ results, screenshots, manual save checks, and coverage limits.
   viewers may likewise omit editable annotations; standards-aware viewers such
   as PDFKit render the saved appearance streams.
 - Copying requires an existing text layer. OCR and encrypted PDFs are not supported.
-- The bundled font supports common Latin, Greek, and Cyrillic text. Unsupported
-  glyphs produce a save error with the draft retained; complex-script shaping
-  has not been validated.
+- Bundled fonts support common Latin, Greek, and Cyrillic text. Extra fonts
+  can be imported as static TrueType (.ttf or TrueType-outline .otf) files up to
+  16 MiB. Variable fonts, CFF, font collections, and web fonts are unsupported.
+  Unsupported glyphs produce a save error with the draft retained; complex-script
+  shaping has not been validated. Custom fonts are embedded for editable reopening.
 - SAF providers control replacement semantics; replacement cannot be guaranteed
   atomic across every provider. Drafts/backups are retained on failure.
 

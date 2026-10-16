@@ -1,6 +1,7 @@
 package com.pdfeditor.app.ui.reader
 
 import android.graphics.Bitmap
+import android.graphics.Typeface
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -15,6 +16,7 @@ import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.requiredSize
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
@@ -39,7 +41,9 @@ import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import com.pdfeditor.app.domain.Annotation
@@ -49,9 +53,11 @@ import com.pdfeditor.app.domain.PdfPoint
 import com.pdfeditor.app.domain.PdfTextWord
 import com.pdfeditor.app.domain.SignaturePlacement
 import com.pdfeditor.app.domain.TextBoxAnnotation
+import com.pdfeditor.app.ui.writing.TextResizeCorner
 import com.pdfeditor.app.ui.writing.annotationSelectionBounds
 import com.pdfeditor.app.ui.writing.clampAnnotationToPage
 import com.pdfeditor.app.ui.writing.hitTestAnnotation
+import com.pdfeditor.app.ui.writing.resizeTextBox
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.math.hypot
 import kotlin.math.roundToInt
@@ -97,7 +103,23 @@ internal fun DocumentPageSurface(
     onInlineChange: (String, String) -> Unit = { _, _ -> },
     onFinishText: () -> Unit = {},
     onInlineCaret: (Rect) -> Unit = {},
+    fontTypeface: (String) -> Typeface = { Typeface.DEFAULT },
+    fontAvailable: (String) -> Boolean = { true },
 ) {
+    val density = LocalDensity.current
+    val textMeasurer = rememberTextMeasurer()
+    val resolveTypeface by rememberUpdatedState(fontTypeface)
+    val fontReady by rememberUpdatedState(fontAvailable)
+    val selectedId by rememberUpdatedState(selectedObjectId)
+    val inlineActive by rememberUpdatedState(inlineText != null)
+
+    fun boundsFor(annotation: Annotation) =
+        annotationSelectionBounds(annotation) { text, size ->
+            android.graphics.Paint().apply {
+                textSize = size
+                typeface = resolveTypeface((annotation as? TextBoxAnnotation)?.fontId ?: "roboto")
+            }.measureText(text)
+        }
     var widthPx by remember { mutableFloatStateOf(1f) }
     var moving by remember(pageId) { mutableStateOf<Annotation?>(null) }
     val visibleAnnotations = annotations.map { if (it.id == moving?.id) moving!! else it }
@@ -127,195 +149,250 @@ internal fun DocumentPageSurface(
         modifier.background(if (invert) Color.Black else Color.White).testTag("pdf-page-$pageIndex")
             .pointerInput(pageId, tool, color, allowAnnotationMove) {
                 awaitEachGesture {
-                    val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
-                    if (textBounds?.contains(down.position) == true) {
-                        var pressed = true
-                        while (pressed) pressed = awaitPointerEvent(PointerEventPass.Initial).changes.any { it.pressed }
-                        return@awaitEachGesture
-                    }
-                    val initialEpoch = parentEpoch()
-                    val drawing = tool == EditorTool.DRAW || tool == EditorTool.HIGHLIGHT
-                    val actsOnTap = tool == EditorTool.TEXT || tool == EditorTool.SIGN || tool == EditorTool.ERASE
-                    if (drawing || actsOnTap) down.consume()
-                    var last = down.position
-                    var distance = 0f
-                    var multiple = false
-                    var selecting = false
-                    var anchor = 0
-                    val points = mutableListOf(down.position)
-                    val draggable =
-                        if (tool == EditorTool.HAND && allowAnnotationMove) {
-                            hitTestAnnotation(
-                                currentAnnotations.filter {
-                                    it is SignaturePlacement || it is TextBoxAnnotation
-                                },
-                                PdfPoint(down.position.x / currentScale, down.position.y / currentScale),
-                            )
-                        } else {
-                            null
+                    try {
+                        val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+                        if (textBounds?.contains(down.position) == true) {
+                            var pressed = true
+                            while (pressed) pressed = awaitPointerEvent(PointerEventPass.Initial).changes.any { it.pressed }
+                            return@awaitEachGesture
                         }
-                    if (draggable != null) {
-                        down.consume()
-                        selectObject(draggable.id)
-                    }
-
-                    fun pdf(p: Offset) = PdfPoint((p.x / currentScale).coerceIn(0f, widthPoints), (p.y / currentScale).coerceAtLeast(0f))
-
-                    fun nearest(p: Offset): Int? {
-                        val pos = pdf(p)
-                        return currentWords.indices.minByOrNull { i ->
-                            val b = currentWords[i].bounds
-                            val dx =
-                                when {
-                                    pos.x < b.left -> b.left - pos.x
-                                    pos.x > b.right -> pos.x - b.right
-                                    else -> 0f
-                                }
-                            val dy =
-                                when {
-                                    pos.y < b.top -> b.top - pos.y
-                                    pos.y > b.bottom -> pos.y - b.bottom
-                                    else -> 0f
-                                }
-                            dx * dx + dy * dy
-                        }
-                    }
-                    // Drag either endpoint of a visible selection to extend or contract it.
-                    val existing = currentSelection?.takeIf { it.pageId == pageId }
-                    if (tool == EditorTool.HAND && existing != null) {
-                        val first = existing.selected.first().bounds
-                        val end = existing.selected.last().bounds
-                        val startHandle = Offset(first.left * currentScale, first.bottom * currentScale)
-                        val endHandle = Offset(end.right * currentScale, end.bottom * currentScale)
-                        if ((down.position - startHandle).getDistance() < 28.dp.toPx()) {
-                            anchor = existing.end
-                            selecting = true
-                            down.consume()
-                        } else if ((down.position - endHandle).getDistance() < 28.dp.toPx()) {
-                            anchor = existing.start
-                            selecting = true
-                            down.consume()
-                        }
-                    }
-                    var eventTime = down.uptimeMillis
-                    val longPressDeadline = down.uptimeMillis + viewConfiguration.longPressTimeoutMillis
-                    while (true) {
-                        val remaining = longPressDeadline - eventTime
-                        val event =
-                            if (tool == EditorTool.HAND && draggable == null && !selecting && !multiple &&
-                                distance < viewConfiguration.touchSlop && remaining > 0
+                        val selectedText = currentAnnotations.firstOrNull { it.id == selectedId } as? TextBoxAnnotation
+                        val originalBounds = selectedText?.let(::boundsFor)
+                        val resizeCorner =
+                            if (allowAnnotationMove && !inlineActive && originalBounds != null &&
+                                fontReady(selectedText.fontId)
                             ) {
-                                withTimeoutOrNull(remaining) { awaitPointerEvent(PointerEventPass.Initial) }
+                                val b = originalBounds
+                                listOf(
+                                    TextResizeCorner.TOP_LEFT to Offset(b.left, b.top),
+                                    TextResizeCorner.TOP_RIGHT to Offset(b.right, b.top),
+                                    TextResizeCorner.BOTTOM_LEFT to Offset(b.left, b.bottom),
+                                    TextResizeCorner.BOTTOM_RIGHT to Offset(b.right, b.bottom),
+                                ).minByOrNull { (_, p) -> (down.position - p * currentScale).getDistance() }
+                                    ?.takeIf { (_, p) -> (down.position - p * currentScale).getDistance() <= 22.dp.toPx() }?.first
                             } else {
-                                awaitPointerEvent(PointerEventPass.Initial)
+                                null
                             }
-                        if (event == null) {
-                            if (distance < viewConfiguration.touchSlop && !multiple) {
-                                nearest(down.position)?.let {
-                                    anchor = it
-                                    selecting = true
-                                    select(TextSelection(pageId, currentWords, it, it))
-                                }
-                            }
-                            continue
-                        }
-                        eventTime = event.changes.maxOf { it.uptimeMillis }
-                        if (event.changes.count { it.pressed } >= 2 || parentEpoch() != initialEpoch) {
-                            multiple = true
-                            moving = null
-                            preview = emptyList()
-                            select(null)
-                            selectObject(null)
-                        }
-                        val change = event.changes.firstOrNull { it.id == down.id } ?: break
-                        val pos = change.position
-                        distance += hypot(pos.x - last.x, pos.y - last.y)
-                        last = pos
-                        if (!multiple) {
-                            when {
-                                draggable != null -> {
-                                    val delta =
-                                        pdf(
-                                            pos,
-                                        ).let { PdfPoint(it.x - down.position.x / currentScale, it.y - down.position.y / currentScale) }
-                                    moving =
-                                        when (draggable) {
-                                            is SignaturePlacement ->
-                                                draggable.copy(
-                                                    position =
-                                                        PdfPoint(
-                                                            (draggable.position.x + delta.x).coerceAtLeast(0f),
-                                                            (draggable.position.y + delta.y).coerceAtLeast(0f),
-                                                        ),
-                                                )
-                                            is TextBoxAnnotation ->
-                                                draggable.copy(
-                                                    position =
-                                                        PdfPoint(
-                                                            (draggable.position.x + delta.x).coerceAtLeast(0f),
-                                                            (draggable.position.y + delta.y).coerceAtLeast(0f),
-                                                        ),
-                                                )
-                                            else -> null
-                                        }
-                                    change.consume()
-                                }
-                                selecting -> {
-                                    nearest(pos)?.let { select(TextSelection(pageId, currentWords, anchor, it)) }
-                                    change.consume()
-                                }
-                                drawing -> {
-                                    if (change.pressed) points.add(pos)
-                                    preview = points.toList()
-                                    change.consume()
-                                }
-                                actsOnTap -> change.consume()
-                            }
-                        }
-                        if (event.changes.none { it.pressed }) break
-                    }
-                    preview = emptyList()
-                    if (!multiple && draggable != null && distance > viewConfiguration.touchSlop) {
-                        moving?.let {
-                            replace(clampAnnotationToPage(it, widthPoints, size.height / currentScale))
-                        }
-                    }
-                    moving = null
-                    if (!multiple && !selecting) {
-                        when {
-                            drawing && points.size > 1 && distance > viewConfiguration.touchSlop -> {
-                                val alphaColor = if (tool == EditorTool.HIGHLIGHT) (color and 0x00ffffff) or 0x59000000 else color
-                                add(
-                                    DrawStroke(
-                                        java.util.UUID.randomUUID().toString(),
-                                        points.map(::pdf),
-                                        alphaColor,
-                                        if (tool == EditorTool.HIGHLIGHT) 14f else 2.5f,
-                                    ),
+                        if (resizeCorner != null) down.consume()
+                        val initialEpoch = parentEpoch()
+                        val drawing = tool == EditorTool.DRAW || tool == EditorTool.HIGHLIGHT
+                        val actsOnTap = tool == EditorTool.TEXT || tool == EditorTool.SIGN || tool == EditorTool.ERASE
+                        if (drawing || actsOnTap) down.consume()
+                        var last = down.position
+                        var distance = 0f
+                        var multiple = false
+                        var cancelled = false
+                        var selecting = false
+                        var anchor = 0
+                        val points = mutableListOf(down.position)
+                        val draggable =
+                            if (resizeCorner == null && tool == EditorTool.HAND && allowAnnotationMove) {
+                                hitTestAnnotation(
+                                    currentAnnotations.filter {
+                                        it is SignaturePlacement || it is TextBoxAnnotation
+                                    },
+                                    PdfPoint(down.position.x / currentScale, down.position.y / currentScale),
                                 )
+                            } else {
+                                null
                             }
-                            distance < viewConfiguration.touchSlop ->
-                                when (tool) {
-                                    EditorTool.TEXT -> textAction(pdf(down.position))
-                                    EditorTool.SIGN -> signAction(pdf(down.position))
-                                    EditorTool.ERASE -> hitTestAnnotation(currentAnnotations, pdf(down.position))?.let { remove(it.id) }
-                                    EditorTool.HAND -> {
-                                        select(null)
-                                        val hit =
-                                            if (allowAnnotationMove) {
-                                                hitTestAnnotation(
-                                                    currentAnnotations,
-                                                    pdf(down.position),
-                                                )
-                                            } else {
-                                                null
-                                            }
-                                        selectObject(hit?.id)
-                                        if (hit == null) pageTap()
-                                    }
-                                    else -> select(null)
-                                }
+                        if (draggable != null) {
+                            down.consume()
+                            selectObject(draggable.id)
                         }
+
+                        fun pdf(p: Offset) =
+                            PdfPoint(
+                                (p.x / currentScale).coerceIn(0f, widthPoints),
+                                (p.y / currentScale).coerceAtLeast(0f),
+                            )
+
+                        fun nearest(p: Offset): Int? {
+                            val pos = pdf(p)
+                            return currentWords.indices.minByOrNull { i ->
+                                val b = currentWords[i].bounds
+                                val dx =
+                                    when {
+                                        pos.x < b.left -> b.left - pos.x
+                                        pos.x > b.right -> pos.x - b.right
+                                        else -> 0f
+                                    }
+                                val dy =
+                                    when {
+                                        pos.y < b.top -> b.top - pos.y
+                                        pos.y > b.bottom -> pos.y - b.bottom
+                                        else -> 0f
+                                    }
+                                dx * dx + dy * dy
+                            }
+                        }
+                        // Drag either endpoint of a visible selection to extend or contract it.
+                        val existing = currentSelection?.takeIf { it.pageId == pageId }
+                        if (tool == EditorTool.HAND && existing != null) {
+                            val first = existing.selected.first().bounds
+                            val end = existing.selected.last().bounds
+                            val startHandle = Offset(first.left * currentScale, first.bottom * currentScale)
+                            val endHandle = Offset(end.right * currentScale, end.bottom * currentScale)
+                            if ((down.position - startHandle).getDistance() < 28.dp.toPx()) {
+                                anchor = existing.end
+                                selecting = true
+                                down.consume()
+                            } else if ((down.position - endHandle).getDistance() < 28.dp.toPx()) {
+                                anchor = existing.start
+                                selecting = true
+                                down.consume()
+                            }
+                        }
+                        var eventTime = down.uptimeMillis
+                        val longPressDeadline = down.uptimeMillis + viewConfiguration.longPressTimeoutMillis
+                        while (true) {
+                            val remaining = longPressDeadline - eventTime
+                            val event =
+                                if (tool == EditorTool.HAND && draggable == null && !selecting && !multiple &&
+                                    distance < viewConfiguration.touchSlop && remaining > 0
+                                ) {
+                                    withTimeoutOrNull(remaining) { awaitPointerEvent(PointerEventPass.Initial) }
+                                } else {
+                                    awaitPointerEvent(PointerEventPass.Initial)
+                                }
+                            if (event == null) {
+                                if (distance < viewConfiguration.touchSlop && !multiple) {
+                                    nearest(down.position)?.let {
+                                        anchor = it
+                                        selecting = true
+                                        select(TextSelection(pageId, currentWords, it, it))
+                                    }
+                                }
+                                continue
+                            }
+                            // Compose synthesizes cancellation as consumed releases, including
+                            // on the Initial pass. Never commit that last resize/ink preview.
+                            if (event.changes.none { it.pressed } && event.changes.any { it.previousPressed && it.isConsumed }) {
+                                cancelled = true
+                                break
+                            }
+                            eventTime = event.changes.maxOf { it.uptimeMillis }
+                            if (event.changes.count { it.pressed } >= 2 || parentEpoch() != initialEpoch) {
+                                multiple = true
+                                moving = null
+                                preview = emptyList()
+                                select(null)
+                                selectObject(null)
+                            }
+                            val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                            val pos = change.position
+                            distance += hypot(pos.x - last.x, pos.y - last.y)
+                            last = pos
+                            if (!multiple) {
+                                when {
+                                    resizeCorner != null && selectedText != null && originalBounds != null -> {
+                                        resizeTextBox(
+                                            selectedText,
+                                            originalBounds,
+                                            resizeCorner,
+                                            PdfPoint((pos.x - down.position.x) / currentScale, (pos.y - down.position.y) / currentScale),
+                                            widthPoints,
+                                            size.height / currentScale,
+                                        ) { raw, width ->
+                                            textMeasurer.reflowTextBox(
+                                                selectedText,
+                                                raw,
+                                                width,
+                                                density,
+                                                resolveTypeface(selectedText.fontId),
+                                            )
+                                        }?.let { moving = it }
+                                        change.consume()
+                                    }
+                                    draggable != null -> {
+                                        val delta =
+                                            pdf(
+                                                pos,
+                                            ).let { PdfPoint(it.x - down.position.x / currentScale, it.y - down.position.y / currentScale) }
+                                        moving =
+                                            when (draggable) {
+                                                is SignaturePlacement ->
+                                                    draggable.copy(
+                                                        position =
+                                                            PdfPoint(
+                                                                (draggable.position.x + delta.x).coerceAtLeast(0f),
+                                                                (draggable.position.y + delta.y).coerceAtLeast(0f),
+                                                            ),
+                                                    )
+                                                is TextBoxAnnotation ->
+                                                    draggable.copy(
+                                                        position =
+                                                            PdfPoint(
+                                                                (draggable.position.x + delta.x).coerceAtLeast(0f),
+                                                                (draggable.position.y + delta.y).coerceAtLeast(0f),
+                                                            ),
+                                                    )
+                                                else -> null
+                                            }
+                                        change.consume()
+                                    }
+                                    selecting -> {
+                                        nearest(pos)?.let { select(TextSelection(pageId, currentWords, anchor, it)) }
+                                        change.consume()
+                                    }
+                                    drawing -> {
+                                        if (change.pressed) points.add(pos)
+                                        preview = points.toList()
+                                        change.consume()
+                                    }
+                                    actsOnTap -> change.consume()
+                                }
+                            }
+                            if (event.changes.none { it.pressed }) break
+                        }
+                        preview = emptyList()
+                        if (!cancelled && !multiple && (draggable != null || resizeCorner != null) &&
+                            distance > viewConfiguration.touchSlop
+                        ) {
+                            moving?.let {
+                                replace(clampAnnotationToPage(it, widthPoints, size.height / currentScale))
+                            }
+                        }
+                        moving = null
+                        if (!cancelled && !multiple && !selecting && resizeCorner == null) {
+                            when {
+                                drawing && points.size > 1 && distance > viewConfiguration.touchSlop -> {
+                                    val alphaColor = if (tool == EditorTool.HIGHLIGHT) (color and 0x00ffffff) or 0x59000000 else color
+                                    add(
+                                        DrawStroke(
+                                            java.util.UUID.randomUUID().toString(),
+                                            points.map(::pdf),
+                                            alphaColor,
+                                            if (tool == EditorTool.HIGHLIGHT) 14f else 2.5f,
+                                        ),
+                                    )
+                                }
+                                distance < viewConfiguration.touchSlop ->
+                                    when (tool) {
+                                        EditorTool.TEXT -> textAction(pdf(down.position))
+                                        EditorTool.SIGN -> signAction(pdf(down.position))
+                                        EditorTool.ERASE -> hitTestAnnotation(currentAnnotations, pdf(down.position))?.let { remove(it.id) }
+                                        EditorTool.HAND -> {
+                                            select(null)
+                                            val hit =
+                                                if (allowAnnotationMove) {
+                                                    hitTestAnnotation(
+                                                        currentAnnotations,
+                                                        pdf(down.position),
+                                                    )
+                                                } else {
+                                                    null
+                                                }
+                                            selectObject(hit?.id)
+                                            if (hit == null) pageTap()
+                                        }
+                                        else -> select(null)
+                                    }
+                            }
+                        }
+                    } finally {
+                        moving = null
+                        preview = emptyList()
                     }
                 }
             },
@@ -409,7 +486,7 @@ internal fun DocumentPageSurface(
                         android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
                             this.color = displayed(annotation.colorArgb).toArgb()
                             textSize = annotation.fontSizePoints * scale
-                            typeface = android.graphics.Typeface.create("sans-serif", android.graphics.Typeface.NORMAL)
+                            typeface = resolveTypeface(annotation.fontId)
                         }
                     annotation.text.replace("\r\n", "\n").replace('\r', '\n').split('\n').forEachIndexed { line, text ->
                         drawContext.canvas.nativeCanvas.drawText(
@@ -423,13 +500,7 @@ internal fun DocumentPageSurface(
             }
             if (inlineText == null) {
                 visibleAnnotations.firstOrNull { it.id == selectedObjectId }?.let { selected ->
-                    val bounds =
-                        annotationSelectionBounds(selected) { text, size ->
-                            android.graphics.Paint().apply {
-                                textSize = size
-                                typeface = android.graphics.Typeface.create("sans-serif", 0)
-                            }.measureText(text)
-                        }
+                    val bounds = boundsFor(selected)
                     bounds?.let { b ->
                         val pad = with(density) { 4.dp.toPx() }
                         Box(
@@ -440,6 +511,29 @@ internal fun DocumentPageSurface(
                                 )
                                 .border(1.dp, if (invert) Color.White else Color.Black).testTag("object-selection-${selected.id}"),
                         )
+                        if (selected is TextBoxAnnotation && allowAnnotationMove && fontReady(selected.fontId)) {
+                            listOf(
+                                "top-left" to Offset(b.left, b.top),
+                                "top-right" to Offset(b.right, b.top),
+                                "bottom-left" to Offset(b.left, b.bottom),
+                                "bottom-right" to Offset(b.right, b.bottom),
+                            ).forEach { (name, corner) ->
+                                val radius = with(density) { 4.dp.toPx() }
+                                val centerX =
+                                    (corner.x * scale + if (name.endsWith("left")) -pad else pad)
+                                        .coerceIn(radius, (widthPx - radius).coerceAtLeast(radius))
+                                val pageHeightPx = with(density) { maxHeight.toPx() }
+                                val centerY =
+                                    (corner.y * scale + if (name.startsWith("top")) -pad else pad)
+                                        .coerceIn(radius, (pageHeightPx - radius).coerceAtLeast(radius))
+                                Box(
+                                    Modifier.offset { IntOffset((centerX - radius).roundToInt(), (centerY - radius).roundToInt()) }
+                                        .size(8.dp).background(if (invert) Color.Black else Color.White, CircleShape)
+                                        .border(1.dp, if (invert) Color.White else Color.Black, CircleShape)
+                                        .testTag("text-resize-$name"),
+                                )
+                            }
+                        }
                     }
                 }
             }
@@ -453,6 +547,7 @@ internal fun DocumentPageSurface(
                     onFinishText,
                     onBounds = { inlineBounds = it },
                     onCaret = onInlineCaret,
+                    typeface = resolveTypeface(edit.annotation.fontId),
                 )
             }
         }

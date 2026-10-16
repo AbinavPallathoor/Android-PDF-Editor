@@ -1,7 +1,9 @@
 package com.pdfeditor.app.ui.reader
 
+import android.graphics.Typeface
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
@@ -32,18 +34,13 @@ import androidx.compose.ui.layout.positionInParent
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.text.PlatformTextStyle
 import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.text.TextRange
-import androidx.compose.ui.text.TextStyle
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.rememberTextMeasurer
-import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import com.pdfeditor.app.domain.TextBoxAnnotation
 import java.util.UUID
 import kotlin.math.roundToInt
@@ -71,6 +68,7 @@ internal fun InlinePageText(
     onFinish: () -> Unit,
     onBounds: (Rect) -> Unit,
     onCaret: (Rect) -> Unit,
+    typeface: Typeface = Typeface.DEFAULT,
 ) {
     val density = LocalDensity.current
     val focus = remember(edit.session) { FocusRequester() }
@@ -82,19 +80,18 @@ internal fun InlinePageText(
     val value = if (input.text == annotation.text) input else TextFieldValue(annotation.text, TextRange(annotation.text.length))
     var textLayout by remember(edit.session) { mutableStateOf<TextLayoutResult?>(null) }
     val paddingPx = with(density) { 4.dp.toPx() }
-    val available = (pageWidthPx - annotation.position.x * scale - paddingPx).coerceAtLeast(paddingPx * 4)
+    val remaining = pageWidthPx - annotation.position.x * scale + paddingPx
+    val available =
+        (annotation.widthPoints?.let { it * scale + paddingPx * 2 } ?: (remaining - paddingPx * 2))
+            .coerceAtMost(remaining).coerceAtLeast(paddingPx * 4)
     val contentWidth = (available - paddingPx * 2).roundToInt().coerceAtLeast(1)
     val argb = Color(annotation.colorArgb)
     val ink = if (invert) Color(1 - argb.red, 1 - argb.green, 1 - argb.blue, argb.alpha) else argb
     val outline = if (invert) Color.White else Color.Black
     val style =
-        TextStyle(
-            color = ink,
-            fontFamily = FontFamily.SansSerif,
-            fontSize = (annotation.fontSizePoints * scale / density.density / density.fontScale).sp,
-            lineHeight = (annotation.fontSizePoints * scale * 1.25f / density.density / density.fontScale).sp,
-            platformStyle = PlatformTextStyle(includeFontPadding = false),
-        )
+        remember(annotation.fontSizePoints, scale, density, typeface, ink) {
+            textBoxStyle(annotation.fontSizePoints, scale, density, typeface).copy(color = ink)
+        }
     var baseline by remember(edit.session, scale) { mutableFloatStateOf(annotation.fontSizePoints * scale) }
     LaunchedEffect(edit.session) {
         focus.requestFocus()
@@ -126,8 +123,8 @@ internal fun InlinePageText(
                 input = next
                 val normalized = next.text.replace("\r\n", "\n").replace('\r', '\n')
                 if (normalized != annotation.text) {
-                    val layout = measurer.measure(normalized, style, constraints = Constraints(maxWidth = contentWidth))
-                    onChange(normalized, layout.pdfLines())
+                    val wrapped = measurer.reflowTextBox(annotation, normalized, contentWidth / scale, density, typeface)
+                    onChange(normalized, wrapped)
                 }
             },
             textStyle = style,
@@ -147,6 +144,7 @@ internal fun InlinePageText(
                         )
                     }
                     .width(with(density) { available.toDp() })
+                    .heightIn(min = with(density) { ((annotation.heightPoints ?: 0f) * scale + paddingPx * 2).toDp() })
                     .onGloballyPositioned {
                         onBounds(
                             Rect(

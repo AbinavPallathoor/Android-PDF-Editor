@@ -1,5 +1,6 @@
 package com.pdfeditor.app.data.pdf
 
+import com.pdfeditor.app.data.fonts.FontRepository
 import com.pdfeditor.app.domain.Annotation
 import com.pdfeditor.app.domain.DrawStroke
 import com.pdfeditor.app.domain.HighlightAnnotation
@@ -8,13 +9,13 @@ import com.pdfeditor.app.domain.PdfRect
 import com.pdfeditor.app.domain.PdfTextWord
 import com.pdfeditor.app.domain.SignaturePlacement
 import com.pdfeditor.app.domain.TextBoxAnnotation
-import com.tom_roush.pdfbox.android.PDFBoxResourceLoader
 import com.tom_roush.pdfbox.cos.COSName
 import com.tom_roush.pdfbox.pdmodel.PDDocument
 import com.tom_roush.pdfbox.pdmodel.PDPage
 import com.tom_roush.pdfbox.pdmodel.PDPageContentStream
 import com.tom_roush.pdfbox.pdmodel.PDResources
 import com.tom_roush.pdfbox.pdmodel.common.PDRectangle
+import com.tom_roush.pdfbox.pdmodel.font.PDCIDFontType2
 import com.tom_roush.pdfbox.pdmodel.font.PDType0Font
 import com.tom_roush.pdfbox.pdmodel.graphics.blend.BlendMode
 import com.tom_roush.pdfbox.pdmodel.graphics.color.PDColor
@@ -40,7 +41,7 @@ import kotlin.math.hypot
  * streams and foreign annotations are retained. Coordinates use the displayed crop box after
  * rotation, in points, with a top-left origin. No PdfRenderer may hold this source open.
  */
-class PdfBoxDocumentContent {
+class PdfBoxDocumentContent(private val fontRepository: FontRepository? = null) {
     suspend fun readAnnotations(source: File): Map<Int, List<Annotation>> =
         withContext(Dispatchers.IO) {
             PDDocument.load(source).use { document ->
@@ -49,7 +50,25 @@ class PdfBoxDocumentContent {
                         val models =
                             page.annotations.mapNotNull { annotation ->
                                 annotation.cosObject.getString(MODEL_KEY)?.let { encoded ->
-                                    Json.decodeFromString<Annotation>(encoded)
+                                    Json.decodeFromString<Annotation>(encoded).also { model ->
+                                        if (model is TextBoxAnnotation && FontRepository.isCustom(model.fontId)) {
+                                            val repository = fontRepository
+                                            if (repository != null && !repository.contains(model.fontId)) {
+                                                val font = annotation.normalAppearanceStream?.resources?.getFont(FONT_RESOURCE)
+                                                val embedded = font?.fontDescriptor?.fontFile2
+                                                requireNotNull(embedded) {
+                                                    "This PDF is missing its editable font. Import the original font again."
+                                                }
+                                                embedded.createInputStream().use {
+                                                    repository.recoverFont(
+                                                        model.fontId,
+                                                        it,
+                                                        annotation.cosObject.getString(FONT_NAME_KEY) ?: "Recovered font",
+                                                    )
+                                                }
+                                            }
+                                        }
+                                    }
                                 }
                             }
                         if (models.isNotEmpty()) put(index, models)
@@ -69,14 +88,19 @@ class PdfBoxDocumentContent {
             require(!destination.exists()) { "Annotation destination must be a new file" }
             PDDocument.load(source).use { document ->
                 require(annotationsByPage.keys.all { it in 0 until document.numberOfPages }) { "Annotation page does not exist" }
-                // Load only if needed; the embedded Apache-2.0 font is shared by every text AP.
-                val font by lazy {
-                    PDFBoxResourceLoader.getStream("fonts/Roboto-Regular.ttf").use { PDType0Font.load(document, it) }
-                }
+                val fonts = mutableMapOf<String, PDType0Font>()
+
+                fun fontFor(model: TextBoxAnnotation): PDType0Font =
+                    fonts.getOrPut(model.fontId) {
+                        val input = fontRepository?.openFont(model.fontId) ?: FontRepository.openBuiltIn(model.fontId)
+                        // Preserve original font bytes for recovery after moving the PDF to a new
+                        // installation. Subsets cannot be used to edit arbitrary future text.
+                        input.use { PDType0Font.load(document, it, !FontRepository.isCustom(model.fontId)) }
+                    }
                 document.pages.forEachIndexed { pageIndex, page ->
                     val retained = page.annotations.filterNot { it.cosObject.containsKey(MODEL_KEY) }.toMutableList()
                     annotationsByPage[pageIndex].orEmpty().forEach { model ->
-                        retained += createAnnotation(document, page, model, if (model is TextBoxAnnotation) font else null)
+                        retained += createAnnotation(document, page, model, if (model is TextBoxAnnotation) fontFor(model) else null)
                     }
                     page.annotations = retained
                 }
@@ -175,6 +199,13 @@ class PdfBoxDocumentContent {
                 is HighlightAnnotation -> model.rects.flatMap { it.corners() }.ifEmpty { listOf(PdfPoint(0f, 0f)) }.bounds()
                 is TextBoxAnnotation -> {
                     require(model.fontSizePoints > 0f && model.fontSizePoints.isFinite()) { "Text font size must be positive" }
+                    require(model.position.x.isFinite() && model.position.y.isFinite()) { "Text position must be finite" }
+                    require(model.widthPoints == null || (model.widthPoints.isFinite() && model.widthPoints > 0f)) {
+                        "Text box width must be finite and positive"
+                    }
+                    require(model.heightPoints == null || (model.heightPoints.isFinite() && model.heightPoints > 0f)) {
+                        "Text box height must be finite and positive"
+                    }
                     val textFont = requireNotNull(font)
                     val lines = model.text.replace("\r\n", "\n").replace('\r', '\n').split('\n')
                     val maxWidth =
@@ -182,16 +213,25 @@ class PdfBoxDocumentContent {
                             lines.maxOf { textFont.getStringWidth(it) / 1000f * model.fontSizePoints }
                         } catch (unsupported: IllegalArgumentException) {
                             throw IllegalArgumentException(
-                                "The bundled font cannot display one or more characters in this text",
+                                "The selected font cannot display one or more characters in this text",
                                 unsupported,
                             )
                         }
+                    val glyphs = textGlyphBounds(textFont, model, lines)
                     PdfRect(
-                        model.position.x,
-                        model.position.y - model.fontSizePoints,
-                        model.position.x + maxWidth.coerceAtLeast(1f),
-                        model.position.y + (lines.size - 1) * model.fontSizePoints * 1.25f + model.fontSizePoints * .3f,
-                    )
+                        minOf(model.position.x, glyphs?.left ?: model.position.x),
+                        minOf(model.position.y - model.fontSizePoints, glyphs?.top ?: model.position.y),
+                        maxOf(model.position.x + maxOf(maxWidth, model.widthPoints ?: 0f, 1f), glyphs?.right ?: model.position.x),
+                        maxOf(
+                            model.position.y + (lines.size - 1) * model.fontSizePoints * 1.25f + model.fontSizePoints * .3f,
+                            model.position.y - model.fontSizePoints + (model.heightPoints ?: 0f),
+                            glyphs?.bottom ?: model.position.y,
+                        ),
+                    ).also { bounds ->
+                        require(listOf(bounds.left, bounds.top, bounds.right, bounds.bottom).all { it.isFinite() }) {
+                            "Text box geometry is too large"
+                        }
+                    }
                 }
             }
         val nativeBounds = displayedBounds.corners().map { coordinates.toNative(it) }.bounds().expanded(.5f)
@@ -238,7 +278,10 @@ class PdfBoxDocumentContent {
         annotation.cosObject.setString(MODEL_KEY, Json.encodeToString(model))
         if (model is TextBoxAnnotation) {
             annotation.contents = model.text
-            annotation.defaultAppearance = "/Roboto ${model.fontSizePoints} Tf ${color.components.joinToString(" ")} rg"
+            annotation.defaultAppearance = "/EditorFont ${model.fontSizePoints} Tf ${color.components.joinToString(" ")} rg"
+            fontRepository?.list()?.firstOrNull { it.id == model.fontId }?.let {
+                annotation.cosObject.setString(FONT_NAME_KEY, it.displayName)
+            }
         }
         val appearance =
             PDAppearanceStream(document).apply {
@@ -277,7 +320,7 @@ class PdfBoxDocumentContent {
                         stream.fill()
                     }
                 is TextBoxAnnotation -> {
-                    appearance.resources.put(COSName.getPDFName("Roboto"), requireNotNull(font))
+                    appearance.resources.put(FONT_RESOURCE, requireNotNull(font))
                     model.text.replace("\r\n", "\n").replace('\r', '\n').split('\n').forEachIndexed { index, line ->
                         val origin =
                             coordinates.toNative(
@@ -299,6 +342,45 @@ class PdfBoxDocumentContent {
         }
         annotation.appearance = PDAppearanceDictionary().apply { setNormalAppearance(appearance) }
         return annotation
+    }
+
+    /** Include actual glyph overhangs/accents, which string advance widths alone omit. */
+    private fun textGlyphBounds(
+        font: PDType0Font,
+        model: TextBoxAnnotation,
+        lines: List<String>,
+    ): PdfRect? {
+        val trueType = (font.descendantFont as? PDCIDFontType2)?.trueTypeFont ?: return null
+        val cmap = trueType.unicodeCmapLookup
+        val scale = model.fontSizePoints / trueType.unitsPerEm
+        var bounds: PdfRect? = null
+        lines.forEachIndexed { lineIndex, line ->
+            var advance = 0f
+            var offset = 0
+            val baseline = model.position.y + lineIndex * model.fontSizePoints * 1.25f
+            while (offset < line.length) {
+                val codePoint = line.codePointAt(offset)
+                val character = String(Character.toChars(codePoint))
+                val glyph = trueType.glyph.getGlyph(cmap.getGlyphId(codePoint))
+                if (glyph != null) {
+                    val rect =
+                        PdfRect(
+                            model.position.x + advance + glyph.xMinimum * scale,
+                            baseline - glyph.yMaximum * scale,
+                            model.position.x + advance + glyph.xMaximum * scale,
+                            baseline - glyph.yMinimum * scale,
+                        )
+                    bounds = bounds?.let {
+                        PdfRect(
+                            minOf(it.left, rect.left), minOf(it.top, rect.top), maxOf(it.right, rect.right), maxOf(it.bottom, rect.bottom),
+                        )
+                    } ?: rect
+                }
+                advance += font.getStringWidth(character) / 1000f * model.fontSizePoints
+                offset += Character.charCount(codePoint)
+            }
+        }
+        return bounds
     }
 
     private class PageCoordinates(page: PDPage) {
@@ -333,5 +415,7 @@ class PdfBoxDocumentContent {
 
     companion object {
         private val MODEL_KEY = COSName.getPDFName("PdfEditorAnnotationV1")
+        private val FONT_RESOURCE = COSName.getPDFName("EditorFont")
+        private val FONT_NAME_KEY = COSName.getPDFName("PdfEditorFontName")
     }
 }

@@ -14,7 +14,16 @@ section supersedes the original gesture-only milestone design.
 The user replaced the original single-page writing-mode requirement with a shared,
 iPad-style multipage annotation surface. `ReaderScreen` now uses the same
 `DocumentPageSurface` in scrolling and paged layouts. The original gradient `DocumentTitleBar` and thumbnail expansion are reused.
-The reader is full-screen: chrome fades after idle, and a Hand tap reveals it.
+The reader is full-screen: at the start of the document the header stays visible
+and the PDF sits below its controls. Away from the start, chrome fades after
+idle and a Hand tap reveals it. The header uses a compact 64dp control area below the status/camera inset.
+Header controls stay on black; a separate 48dp fade below them holds black for
+its first quarter, then fades linearly to transparent.
+Header swipes follow the finger and settle with a damped spring. Neighbour
+thumbnails preload off the UI thread; navigation uses the exact previewed URI
+and flushes the draft. A temporary display frame bridges loading until the next
+document's first page renders, then fades out. It never changes PDF content.
+Document options have separate, equally divided page and file action groups.
 Chrome and panels use pure black. The pencil enables a compact monochrome editing tray; colours are requested
 from its palette button. Done returns to reading. Hand scrolls/selects text and,
 only during editing, drags app-created text/signatures. Two fingers navigate
@@ -37,7 +46,17 @@ coordinates use the displayed CropBox after rotation, with a top-left origin.
 `AnnotationBounds` keeps movable text/signatures within the page. Text extraction
 uses PDFBox geometry and runs off the UI thread.
 
-Text is entered directly on the page through `InlinePageText`, with IME-aware caret visibility. Live updates persist through `DocumentEdits.editText`, coalesced by typing session into one undo step. Visual wrapping becomes explicit PDF newlines; multiline text stays within the page. Selection outlines use PDF-space bounds.
+Text is entered directly on the page through `InlinePageText`, with IME-aware caret visibility. Live updates persist through `DocumentEdits.editText`, coalesced by typing session into one undo step. Visual wrapping becomes explicit PDF newlines; multiline text stays within the page. Selection outlines use PDF-space bounds. Selected text boxes expose four corner
+handles after typing finishes; resizing reflows preserved source text at a stable
+font size and commits one undo step. Width/height and font IDs are PDF-space model
+properties and survive drafts/export. The compact tray offers contextual text
+colour and font controls. Sans (Roboto), Serif (Droid Serif), and Mono (Droid Sans
+Mono) are bundled under Apache-2.0; private static TrueType imports use SAF.
+`FontRepository` validates bounded files off the UI thread. Custom fonts are fully
+embedded and can be recovered from PDF appearances; missing fonts are reported
+and text reflow waits for import or an explicit replacement font. Typeface/style
+objects must stay stable during inline layout to avoid recomposition loops.
+The tray animates its content size; resizing tracks the finger without tween lag.
 
 The bottom-right save icon offers save-as-new (default) and explicit current-file
 replacement when writable. Save/share snapshot every page. Pending export JSON

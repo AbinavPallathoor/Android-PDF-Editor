@@ -1,20 +1,29 @@
 package com.pdfeditor.app.ui.reader
 
+import android.graphics.Typeface
+import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.IntrinsicSize
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -34,8 +43,11 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.vector.PathParser
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import com.pdfeditor.app.ui.theme.SurfaceElevated
+import com.pdfeditor.app.data.fonts.EditorFont
 
 /** The document stays full size; this compact tray only exists during annotation editing. */
 @Composable
@@ -50,21 +62,65 @@ internal fun DocumentEditingTray(
     onRedo: () -> Unit,
     onDone: () -> Unit,
     modifier: Modifier = Modifier,
+    fonts: List<EditorFont> = emptyList(),
+    fontId: String = "roboto",
+    onChooseFont: ((String) -> Unit)? = null,
+    onImportFont: () -> Unit = {},
+    fontTypeface: (String) -> Typeface = { Typeface.DEFAULT },
 ) {
+    var fontsVisible by remember { mutableStateOf(false) }
     var colorsVisible by remember { mutableStateOf(false) }
     Surface(modifier.testTag("editing-tray-surface"), shape = RoundedCornerShape(20.dp), color = Color.Black, shadowElevation = 0.dp) {
-        Column(Modifier.padding(horizontal = 8.dp, vertical = 4.dp)) {
+        Column(Modifier.animateContentSize().padding(horizontal = 8.dp, vertical = 4.dp)) {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    tool.label,
-                    Modifier.weight(1f).padding(start = 12.dp),
-                    style = MaterialTheme.typography.labelMedium,
-                    color = Color.LightGray,
-                )
-                if (tool != EditorTool.HAND && tool != EditorTool.ERASE) {
+                if (onChooseFont != null) {
+                    Box(Modifier.weight(1f)) {
+                        TextButton(onClick = { fontsVisible = !fontsVisible }, Modifier.testTag("font-options")) {
+                            Text(
+                                "${fonts.firstOrNull { it.id == fontId }?.displayName ?: "Font"} ▾",
+                                color = Color.White,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                        DropdownMenu(
+                            expanded = fontsVisible,
+                            onDismissRequest = { fontsVisible = false },
+                            modifier = Modifier.heightIn(max = 300.dp),
+                            containerColor = Color.Black,
+                        ) {
+                            fonts.forEach { font ->
+                                DropdownMenuItem(
+                                    text = { Text(font.displayName, color = Color.White, fontFamily = FontFamily(fontTypeface(font.id))) },
+                                    onClick = {
+                                        fontsVisible = false
+                                        onChooseFont(font.id)
+                                    },
+                                    modifier = Modifier.testTag("font-option-${font.id}"),
+                                )
+                            }
+                            DropdownMenuItem(
+                                text = { Text("Add font…", color = Color.White) },
+                                onClick = {
+                                    fontsVisible = false
+                                    onImportFont()
+                                },
+                                modifier = Modifier.testTag("import-font"),
+                            )
+                        }
+                    }
+                } else {
+                    Text(
+                        tool.label,
+                        Modifier.weight(1f).padding(start = 12.dp),
+                        style = MaterialTheme.typography.labelMedium,
+                        color = Color.LightGray,
+                    )
+                }
+                if ((tool != EditorTool.HAND && tool != EditorTool.ERASE) || onChooseFont != null) {
                     Box {
                         QuietIconButton(OptionsGlyph, "Ink colour", { colorsVisible = !colorsVisible }, Modifier.testTag("ink-options"))
-                        DropdownMenu(expanded = colorsVisible, onDismissRequest = { colorsVisible = false }) {
+                        DropdownMenu(expanded = colorsVisible, onDismissRequest = { colorsVisible = false }, containerColor = Color.Black) {
                             Row(Modifier.padding(8.dp).testTag("ink-colors"), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                                 listOf(
                                     0xFF000000.toInt(),
@@ -123,17 +179,46 @@ internal fun DocumentOptions(
     Surface(
         Modifier.padding(horizontal = 24.dp, vertical = 12.dp).clickable {},
         shape = RoundedCornerShape(16.dp),
-        color = SurfaceElevated,
+        color = Color.Black,
     ) {
-        Column(Modifier.padding(8.dp)) {
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
-                TextButton(onClick = onPages, Modifier.testTag("pages")) { Text("Pages") }
-                TextButton(onClick = onFit, Modifier.testTag("fit-page")) { Text("Fit page") }
-                TextButton(onClick = onLayout, Modifier.testTag("layout-toggle")) { Text(if (paged) "Scroll view" else "Page view") }
+        val groupShape = RoundedCornerShape(10.dp)
+        val groupModifier =
+            Modifier.fillMaxWidth().height(IntrinsicSize.Min)
+                .clip(groupShape).border(1.dp, Color.White.copy(alpha = .2f), groupShape)
+        val dividerModifier = Modifier.fillMaxHeight().width(1.dp).background(Color.White.copy(alpha = .2f))
+        val cellPadding = PaddingValues(horizontal = 8.dp, vertical = 12.dp)
+        Column(Modifier.padding(8.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Row(groupModifier, verticalAlignment = Alignment.CenterVertically) {
+                TextButton(
+                    onClick = onPages,
+                    modifier = Modifier.weight(1f).heightIn(min = 48.dp).testTag("pages"),
+                    contentPadding = cellPadding,
+                ) { Text("Pages", color = Color.White, textAlign = TextAlign.Center) }
+                Box(dividerModifier)
+                TextButton(
+                    onClick = onFit,
+                    modifier = Modifier.weight(1f).heightIn(min = 48.dp).testTag("fit-page"),
+                    contentPadding = cellPadding,
+                ) { Text("Fit page", color = Color.White, textAlign = TextAlign.Center) }
+                Box(dividerModifier)
+                TextButton(
+                    onClick = onLayout,
+                    modifier = Modifier.weight(1f).heightIn(min = 48.dp).testTag("layout-toggle"),
+                    contentPadding = cellPadding,
+                ) { Text(if (paged) "Scroll view" else "Page view", color = Color.White, textAlign = TextAlign.Center) }
             }
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
-                TextButton(onClick = onShare) { Text("Share") }
-                TextButton(onClick = onCompress) { Text("Compress a copy") }
+            Row(groupModifier, verticalAlignment = Alignment.CenterVertically) {
+                TextButton(
+                    onClick = onShare,
+                    modifier = Modifier.weight(1f).heightIn(min = 48.dp),
+                    contentPadding = cellPadding,
+                ) { Text("Share", color = Color.White, textAlign = TextAlign.Center) }
+                Box(dividerModifier)
+                TextButton(
+                    onClick = onCompress,
+                    modifier = Modifier.weight(1f).heightIn(min = 48.dp),
+                    contentPadding = cellPadding,
+                ) { Text("Compress a copy", color = Color.White, textAlign = TextAlign.Center) }
             }
         }
     }

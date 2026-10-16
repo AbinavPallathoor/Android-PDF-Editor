@@ -32,6 +32,10 @@ data class TextBoxAnnotation(
     val text: String,
     val fontSizePoints: Float,
     val colorArgb: Int,
+    val widthPoints: Float? = null,
+    val heightPoints: Float? = null,
+    val sourceText: String? = null,
+    val fontId: String = "roboto",
 ) : Annotation
 
 /** [strokes] are stored once in a small canonical box (see `WritingViewModel`) and reused at

@@ -1,6 +1,7 @@
 package com.pdfeditor.app.data.pdf
 
 import androidx.test.core.app.ApplicationProvider
+import com.pdfeditor.app.data.fonts.FontRepository
 import com.pdfeditor.app.domain.DrawStroke
 import com.pdfeditor.app.domain.HighlightAnnotation
 import com.pdfeditor.app.domain.PdfPoint
@@ -8,6 +9,10 @@ import com.pdfeditor.app.domain.PdfRect
 import com.pdfeditor.app.domain.SignaturePlacement
 import com.pdfeditor.app.domain.TextBoxAnnotation
 import com.tom_roush.pdfbox.android.PDFBoxResourceLoader
+import com.tom_roush.pdfbox.contentstream.operator.Operator
+import com.tom_roush.pdfbox.cos.COSName
+import com.tom_roush.pdfbox.cos.COSNumber
+import com.tom_roush.pdfbox.pdfparser.PDFStreamParser
 import com.tom_roush.pdfbox.pdmodel.PDDocument
 import com.tom_roush.pdfbox.pdmodel.PDPage
 import com.tom_roush.pdfbox.pdmodel.PDPageContentStream
@@ -156,6 +161,119 @@ class PdfBoxDocumentContentTest {
             } catch (error: IllegalArgumentException) {
                 assertTrue(error.message.orEmpty().contains("font", ignoreCase = true))
                 assertFalse(destination.exists())
+            }
+        }
+
+    @Test fun fontColorDimensionsAndUnwrappedSourceSurvivePdfRoundTrip() =
+        runTest {
+            val text =
+                TextBoxAnnotation(
+                    "sized", PdfPoint(40f, 90f), "Serif\nwrapped", 14f, 0xFFCC2244.toInt(),
+                    widthPoints = 180f, heightPoints = 90f, sourceText = "Serif wrapped", fontId = "droid-serif",
+                )
+            val saved = content.writeAnnotations(fixture(), File(temporary.root, "serif.pdf"), mapOf(0 to listOf(text)))
+            assertEquals(mapOf(0 to listOf(text)), content.readAnnotations(saved))
+            PDDocument.load(saved).use { document ->
+                val annotation = document.getPage(0).annotations.last()
+                assertEquals(181f, annotation.rectangle.width, .01f)
+                assertEquals(91f, annotation.rectangle.height, .01f)
+                val font = annotation.normalAppearanceStream.resources.getFont(COSName.getPDFName("EditorFont"))
+                assertTrue(font.name.contains("DroidSerif"))
+                assertTrue(font.isEmbedded)
+                assertArrayEquals(floatArrayOf(.8f, 34f / 255f, 68f / 255f), annotation.color.components, .001f)
+                val appearance = annotation.normalAppearanceStream.cosObject.createInputStream().use { it.readBytes().decodeToString() }
+                assertTrue(appearance.contains(" Tf"))
+                val parser = PDFStreamParser(annotation.normalAppearanceStream)
+                parser.parse()
+                val tokens = parser.tokens
+                val colorIndex = tokens.indexOfFirst { it is Operator && (it.name == "sc" || it.name == "rg") }
+                assertTrue("The text appearance must set a fill colour", colorIndex >= 3)
+                val fill = tokens.subList(colorIndex - 3, colorIndex).map { (it as COSNumber).floatValue() }.toFloatArray()
+                assertArrayEquals(floatArrayOf(.8f, 34f / 255f, 68f / 255f), fill, .001f)
+                assertTrue(annotation.cosObject.getString(COSName.DA).contains("/EditorFont"))
+            }
+        }
+
+    @Test fun smallExplicitBoxDoesNotClipLongMultilineTextInItsAppearance() =
+        runTest {
+            val text =
+                TextBoxAnnotation(
+                    "long",
+                    PdfPoint(40f, 90f),
+                    "A long visible text line\nSecond line",
+                    14f,
+                    -16777216,
+                    widthPoints = 1f,
+                    heightPoints = 1f,
+                )
+            val saved = content.writeAnnotations(fixture(), File(temporary.root, "overflow.pdf"), mapOf(0 to listOf(text)))
+            PDDocument.load(saved).use { document ->
+                val annotation = document.getPage(0).annotations.last()
+                val font = annotation.normalAppearanceStream.resources.getFont(COSName.getPDFName("EditorFont"))
+                val lineWidth = font.getStringWidth("A long visible text line") / 1000f * 14f
+                assertTrue(annotation.rectangle.width >= lineWidth)
+                assertTrue(annotation.rectangle.height >= 14f * 2.55f)
+                assertEquals(annotation.rectangle.width, annotation.normalAppearanceStream.bBox.width, .001f)
+                assertEquals(annotation.rectangle.height, annotation.normalAppearanceStream.bBox.height, .001f)
+            }
+        }
+
+    @Test fun customFontIsFullyEmbeddedAndRecoveredInAFreshPrivateLibrary() =
+        runTest {
+            val originalFiles = temporary.newFolder("original-fonts")
+            val repository = FontRepository(originalFiles)
+            val original = FontRepository.openBuiltIn("droid-mono").use { it.readBytes() }
+            val imported = original.inputStream().use { repository.importFont(it, "My mono") }
+            val text = TextBoxAnnotation("custom", PdfPoint(40f, 90f), "Mono editable", 14f, -16777216, fontId = imported.id)
+            val saved =
+                PdfBoxDocumentContent(repository).writeAnnotations(
+                    fixture(),
+                    File(temporary.root, "custom.pdf"),
+                    mapOf(0 to listOf(text)),
+                )
+            PDDocument.load(saved).use { document ->
+                val font = document.getPage(0).annotations.last().normalAppearanceStream.resources.getFont(COSName.getPDFName("EditorFont"))
+                assertTrue(font.name.contains("DroidSansMono"))
+                assertArrayEquals(original, font.fontDescriptor.fontFile2.createInputStream().use { it.readBytes() })
+            }
+            // A crash between the atomic TTF and metadata writes leaves an orphan font file.
+            // Its presence must not prevent the PDF from repairing the catalogue entry.
+            assertTrue(File(originalFiles, "fonts/${imported.id}.json").delete())
+            assertFalse(repository.contains(imported.id))
+            assertEquals(mapOf(0 to listOf(text)), PdfBoxDocumentContent(repository).readAnnotations(saved))
+            assertEquals(imported, repository.list().last())
+            assertTrue(repository.contains(imported.id))
+            val fresh = FontRepository(temporary.newFolder("recovered-fonts"))
+            assertFalse(fresh.contains(imported.id))
+            val reopened = PdfBoxDocumentContent(fresh)
+            assertEquals(mapOf(0 to listOf(text)), reopened.readAnnotations(saved))
+            assertEquals(imported, fresh.list().last())
+            assertArrayEquals(original, fresh.openFont(imported.id).use { it.readBytes() })
+            // The recovered full font can encode characters that were absent from the first save.
+            val revised = text.copy(text = "New characters: 123 XYZ")
+            val resaved = reopened.writeAnnotations(saved, File(temporary.root, "recovered.pdf"), mapOf(0 to listOf(revised)))
+            assertEquals(mapOf(0 to listOf(revised)), reopened.readAnnotations(resaved))
+        }
+
+    @Test fun invalidTextBoxGeometryAndMissingFontLeaveDestinationUncreated() =
+        runTest {
+            val source = fixture()
+            val base = TextBoxAnnotation("text", PdfPoint(40f, 90f), "Text", 14f, -16777216)
+            val invalid =
+                listOf(
+                    base.copy(widthPoints = Float.NaN),
+                    base.copy(heightPoints = -1f),
+                    base.copy(position = PdfPoint(Float.POSITIVE_INFINITY, 90f)),
+                    base.copy(fontId = "custom-" + "0".repeat(64)),
+                )
+            invalid.forEachIndexed { index, text ->
+                val destination = File(temporary.root, "invalid-$index.pdf")
+                try {
+                    content.writeAnnotations(source, destination, mapOf(0 to listOf(text)))
+                    fail("invalid text must fail before creating the export")
+                } catch (_: IllegalArgumentException) {
+                    assertFalse(destination.exists())
+                }
             }
         }
 

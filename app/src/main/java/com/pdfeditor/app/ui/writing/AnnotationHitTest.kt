@@ -27,9 +27,12 @@ private fun isHit(
     when (annotation) {
         is TextBoxAnnotation -> {
             val lines = annotation.text.replace("\r\n", "\n").replace('\r', '\n').split('\n')
-            val estimatedWidth = lines.maxOf { it.length } * annotation.fontSizePoints * 0.6f
+            val estimatedWidth = annotation.widthPoints ?: (lines.maxOf { it.length } * annotation.fontSizePoints * 0.6f)
             val top = annotation.position.y - annotation.fontSizePoints - HIT_RADIUS_POINTS
-            val bottom = annotation.position.y + (lines.size - 1) * annotation.fontSizePoints * 1.25f + HIT_RADIUS_POINTS
+            val bottom =
+                annotation.position.y +
+                    (annotation.heightPoints?.minus(annotation.fontSizePoints) ?: ((lines.size - 1) * annotation.fontSizePoints * 1.25f)) +
+                    HIT_RADIUS_POINTS
             val xRange = (annotation.position.x - HIT_RADIUS_POINTS)..(annotation.position.x + estimatedWidth + HIT_RADIUS_POINTS)
             point.x in xRange && point.y in top..bottom
         }

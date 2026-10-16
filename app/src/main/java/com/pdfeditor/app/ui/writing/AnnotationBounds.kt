@@ -55,10 +55,8 @@ fun clampAnnotationToPage(
                         annotation.position.y,
                         0f,
                         -annotation.fontSizePoints,
-                        lines.maxOf {
-                            it.length
-                        } * annotation.fontSizePoints * .6f,
-                        (lines.size - 1) * annotation.fontSizePoints * 1.25f + annotation.fontSizePoints * .25f,
+                        annotation.widthPoints ?: (lines.maxOf { it.length } * annotation.fontSizePoints * .6f),
+                        (annotation.heightPoints ?: (lines.size * annotation.fontSizePoints * 1.25f)) - annotation.fontSizePoints,
                     ),
             )
         }

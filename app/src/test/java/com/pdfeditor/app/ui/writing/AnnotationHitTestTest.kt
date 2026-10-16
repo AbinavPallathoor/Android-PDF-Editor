@@ -11,6 +11,13 @@ import org.junit.Assert.assertNull
 import org.junit.Test
 
 class AnnotationHitTestTest {
+    @Test fun explicitlySizedTextBoxCanBeSelectedInItsEmptyInterior() {
+        val text = TextBoxAnnotation("text", PdfPoint(30f, 50f), "Hi", 20f, -1, widthPoints = 200f, heightPoints = 100f)
+        assertEquals(text, hitTestAnnotation(listOf(text), PdfPoint(220f, 120f)))
+        assertNull(hitTestAnnotation(listOf(text), PdfPoint(250f, 120f)))
+        assertNull(hitTestAnnotation(listOf(text), PdfPoint(220f, 150f)))
+    }
+
     // A one-line hit box makes the displayed second/third lines impossible to edit or erase.
     @Test fun multilineTextCanBeSelectedOnItsLastLine() {
         val text = TextBoxAnnotation("text", PdfPoint(30f, 50f), "First\nSecond\nThird", 20f, -1)

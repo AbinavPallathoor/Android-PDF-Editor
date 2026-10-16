@@ -27,6 +27,7 @@ import androidx.test.platform.app.InstrumentationRegistry
 import androidx.test.runner.lifecycle.ActivityLifecycleMonitorRegistry
 import androidx.test.runner.lifecycle.Stage
 import com.pdfeditor.app.MainActivity
+import com.pdfeditor.app.PdfEditorApplication
 import com.pdfeditor.app.data.pdf.PdfBoxDocumentContent
 import com.pdfeditor.app.domain.DrawStroke
 import com.pdfeditor.app.domain.SignaturePlacement
@@ -57,6 +58,7 @@ class IncomingPdfIntegrationTest {
     private val instrumentation = InstrumentationRegistry.getInstrumentation()
     private val context = instrumentation.targetContext
     private val fixtures = mutableListOf<File>()
+    private val fixtureRecents = mutableListOf<Long>()
     private var coldActivity: MainActivity? = null
     private var restoreSignatures = false
     private var originalSignatures: ByteArray? = null
@@ -70,9 +72,63 @@ class IncomingPdfIntegrationTest {
         }
         instrumentation.waitForIdleSync()
         fixtures.forEach { it.delete() }
+        runBlocking {
+            fixtureRecents.forEach { (context.applicationContext as PdfEditorApplication).recentsRepository.remove(it) }
+        }
         if (restoreSignatures) {
             val store = File(context.filesDir, "signatures.json")
             originalSignatures?.let { store.writeBytes(it) } ?: store.delete()
+        }
+    }
+
+    @Test
+    fun swipingBetweenDocumentsKeepsTheUnsavedDraftAndFinishesTheRenderedHandoff() {
+        val source = createPdf("swipe-source", pageCount = 3)
+        val target = createPdf("swipe-target", pageCount = 5)
+        val repository = (context.applicationContext as PdfEditorApplication).recentsRepository
+        runBlocking {
+            // Seed owned test URIs so the real reader has adjacent documents. Production
+            // still records only documents with durable grants; no provider is mocked.
+            listOf(target, source).forEach { pdf ->
+                fixtureRecents.add(repository.recordOpened(pdf.uri.toString(), pdf.name, null).id)
+            }
+        }
+        launchCold(source.uri)
+        awaitPdf(source.name, 3)
+        selectTool("DRAW")
+        composeRule.onNodeWithTag("pdf-page-0").performTouchInput {
+            down(Offset(width * .2f, height * .4f))
+            moveTo(Offset(width * .5f, height * .45f), 160)
+            up()
+        }
+        revealChrome()
+        composeRule.onNodeWithTag("document-details").performTouchInput {
+            down(Offset(width * .9f, height * .5f))
+            moveTo(Offset(width * .1f, height * .5f), 400)
+            up()
+        }
+        awaitSwitchedDocument(target)
+        awaitPdf(target.name, 5)
+        composeRule.onNodeWithTag("document-details").performTouchInput {
+            down(Offset(width * .1f, height * .5f))
+            moveTo(Offset(width * .9f, height * .5f), 400)
+            up()
+        }
+        awaitSwitchedDocument(source)
+        awaitPdf(source.name, 3)
+        composeRule.onNodeWithTag("save-edits").assertIsDisplayed()
+        assertTrue(
+            "Swiping must retain a draft without modifying its source",
+            runBlocking {
+                PdfBoxDocumentContent().readAnnotations(copySource(source.uri)).values.flatten().isEmpty()
+            },
+        )
+    }
+
+    private fun awaitSwitchedDocument(pdf: PdfFixture) {
+        composeRule.waitUntil(timeoutMillis = 30_000) {
+            composeRule.onAllNodesWithTag("reader-document-${pdf.uri}").fetchSemanticsNodes().isNotEmpty() &&
+                composeRule.onAllNodesWithTag("document-switch-frame").fetchSemanticsNodes().isEmpty()
         }
     }
 

@@ -2,7 +2,6 @@ package com.pdfeditor.app.ui.reader
 
 import android.content.ContentResolver
 import android.graphics.Bitmap
-import android.net.Uri
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.tween
@@ -12,23 +11,27 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.awaitEachGesture
-import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
+import androidx.compose.foundation.layout.displayCutout
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBars
+import androidx.compose.foundation.layout.statusBarsIgnoringVisibility
+import androidx.compose.foundation.layout.union
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.rememberScrollState
@@ -65,19 +68,12 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.PathOperation
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.asImageBitmap
-import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.onSizeChanged
-import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
-import androidx.compose.ui.semantics.onClick
-import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
@@ -85,16 +81,13 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.toSize
 import androidx.compose.ui.window.Popup
 import androidx.compose.ui.window.PopupProperties
-import com.pdfeditor.app.data.pdf.loadFirstPageThumbnail
 import com.pdfeditor.app.domain.CompressionPreset
 import com.pdfeditor.app.domain.CompressionResult
 import com.pdfeditor.app.domain.RecentDocument
 import com.pdfeditor.app.ui.theme.OnSurfaceSecondary
 import com.pdfeditor.app.ui.theme.SurfaceElevated
-import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 import kotlin.math.cos
 import kotlin.math.roundToInt
@@ -102,7 +95,7 @@ import kotlin.math.sin
 
 private const val THUMB_TARGET_WIDTH_DP = 200
 private const val THUMB_TARGET_TOP_DP = 140
-private const val GRADIENT_EXTRA_FADE_DP = 32
+private const val GRADIENT_EXTRA_FADE_DP = 48
 
 /**
  * A gradient bar (fades to transparent) showing a page-1 thumbnail with the document's name and a
@@ -125,16 +118,18 @@ fun DocumentTitleBar(
     onRename: (String) -> Unit,
     onShare: () -> Unit,
     onCompress: suspend (CompressionPreset) -> CompressionResult?,
-    onSwitchDocument: (forward: Boolean) -> Unit,
+    onSwitchDocument: suspend (RecentDocument) -> Boolean,
     onClose: () -> Unit,
     onToggleWriteMode: () -> Unit,
     onToggleInvert: () -> Unit,
     modifier: Modifier = Modifier,
     editing: Boolean = false,
     expandedContent: (@Composable (dismiss: () -> Unit) -> Unit)? = null,
+    onHeaderHeightChanged: (Int) -> Unit = {},
 ) {
     var expanded by remember { mutableStateOf(false) }
     var renaming by remember { mutableStateOf(false) }
+    var swiping by remember { mutableStateOf(false) }
     val progress = remember { Animatable(0f) }
     var thumbBoundsInRoot by remember { mutableStateOf<Rect?>(null) }
 
@@ -144,7 +139,7 @@ fun DocumentTitleBar(
 
     Box(modifier = modifier.fillMaxSize()) {
         AnimatedVisibility(
-            visible = visible || expanded || renaming || progress.value > 0f,
+            visible = visible || expanded || renaming || swiping || progress.value > 0f,
             enter = fadeIn(tween(150)),
             exit = fadeOut(tween(150)),
             modifier = Modifier.align(Alignment.TopCenter),
@@ -164,6 +159,8 @@ fun DocumentTitleBar(
                 onToggleWriteMode = onToggleWriteMode,
                 onToggleInvert = onToggleInvert,
                 editing = editing,
+                onHeaderHeightChanged = onHeaderHeightChanged,
+                onSwipeActive = { swiping = it },
             )
         }
 
@@ -279,6 +276,7 @@ private fun lerp(
     fraction: Float,
 ): Float = start + (stop - start) * fraction
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun CollapsedBar(
     displayName: String,
@@ -289,174 +287,37 @@ private fun CollapsedBar(
     contentResolver: ContentResolver,
     adjacentDocument: (forward: Boolean) -> RecentDocument?,
     onTap: () -> Unit,
-    onSwitchDocument: (forward: Boolean) -> Unit,
+    onSwitchDocument: suspend (RecentDocument) -> Boolean,
     onThumbnailBoundsChanged: (Rect) -> Unit,
     onClose: () -> Unit,
     onToggleWriteMode: () -> Unit,
     onToggleInvert: () -> Unit,
     editing: Boolean,
+    onHeaderHeightChanged: (Int) -> Unit,
+    onSwipeActive: (Boolean) -> Unit,
 ) {
-    val density = LocalDensity.current
-    val swipeThresholdPx = with(density) { 56.dp.toPx() }
-    val scope = rememberCoroutineScope()
-
-    // Swiping switches document in place: the gradient bar itself never disappears/reappears
-    // (unlike the old approach of just calling onSwitchDocument directly, which replaces the
-    // whole screen/composable and made the bar's AnimatedVisibility flicker out and back in) -
-    // instead only the thumbnail+title slide out and a locally-fetched preview of the target
-    // document's thumbnail+title slides/fades in, and the real navigation (onSwitchDocument) only
-    // fires once that local animation finishes, by which point the newly-mounted real screen's own
-    // title bar already matches what was just animated to, so the swap underneath is invisible.
-    // The subtitle (page position) is deliberately NOT part of this - it comes from the real page
-    // count of whichever document is actually loaded, which isn't known for the target until after
-    // navigation, so it can't be previewed and is left showing the current document's value.
-    var shownName by remember { mutableStateOf(displayName) }
-    var shownThumb by remember { mutableStateOf(thumbnail) }
-    var isSwitching by remember { mutableStateOf(false) }
-    LaunchedEffect(displayName, thumbnail) {
-        if (!isSwitching) {
-            shownName = displayName
-            shownThumb = thumbnail
-        }
-    }
-    val slideX = remember { Animatable(0f) }
-    val contentAlpha = remember { Animatable(1f) }
-    var rowWidthPx by remember { mutableStateOf(0f) }
-    val thumbWidthPx = with(density) { 32.dp.roundToPx() }
-    val thumbHeightPx = with(density) { 42.dp.roundToPx() }
-
-    fun handleSwipe(forward: Boolean) {
-        val target = adjacentDocument(forward) ?: return
-        scope.launch {
-            isSwitching = true
-            coroutineScope {
-                launch { slideX.animateTo(if (forward) -rowWidthPx else rowWidthPx, tween(160)) }
-                launch { contentAlpha.animateTo(0f, tween(160)) }
-            }
-            val newThumb = loadFirstPageThumbnail(contentResolver, Uri.parse(target.uri), thumbWidthPx, thumbHeightPx)
-            shownName = target.displayName
-            shownThumb = newThumb
-            slideX.snapTo(if (forward) rowWidthPx.toFloat() else -rowWidthPx.toFloat())
-            coroutineScope {
-                launch { slideX.animateTo(0f, tween(180)) }
-                launch { contentAlpha.animateTo(1f, tween(180)) }
-            }
-            isSwitching = false
-            onSwitchDocument(forward)
-        }
-    }
-
-    // The gradient background lives on this outer Box, which is sized to wrap its child (the
-    // content Column below) with no size modifiers of its own - it must NOT carry the status-bar
-    // inset padding itself, or the gradient's rendered top edge shifts down by that inset,
-    // leaving a gap above it where raw page content shows through with no overlay at all
-    // (confirmed live). The inset padding instead goes on the inner Row, so only the *content*
-    // (thumbnail/text/buttons) is pushed clear of the status bar icons while the gradient still
-    // starts at the true top of the screen. A trailing spacer extends the gradient's fade a bit
-    // further below the content row itself, per request.
-    Box(
-        modifier =
-            Modifier
-                .fillMaxWidth()
-                .background(Brush.verticalGradient(listOf(Color.Black, Color.Black.copy(alpha = 0f)))),
-    ) {
+    // Keep the compact controls above both the camera cutout and system status area.
+    // Fade only below the controls; reserving header space must not expose a seam.
+    Box(Modifier.fillMaxWidth()) {
         Column(modifier = Modifier.fillMaxWidth()) {
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 modifier =
                     Modifier
                         .fillMaxWidth()
-                        .windowInsetsPadding(WindowInsets.statusBars)
-                        .padding(horizontal = 12.dp, vertical = 16.dp)
-                        .height(72.dp),
+                        .background(Color.Black)
+                        .onSizeChanged { onHeaderHeightChanged(it.height) }
+                        .windowInsetsPadding(
+                            WindowInsets.statusBarsIgnoringVisibility.union(WindowInsets.displayCutout).only(WindowInsetsSides.Top),
+                        )
+                        .padding(horizontal = 12.dp, vertical = 4.dp)
+                        .height(56.dp),
             ) {
-                // The tap-to-expand / swipe-to-switch-document gesture is scoped to only this
-                // inner Row (thumbnail/name/subtitle), as a sibling of the icon buttons below
-                // rather than their parent - two overlapping pointerInput regions on the same
-                // surface would race each other for the same touch the way CLAUDE.md's gesture-
-                // arbitration note warns about, so the buttons sit entirely outside this gesture
-                // region's subtree.
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier =
-                        Modifier
-                            .weight(1f)
-                            .testTag("document-details")
-                            .semantics {
-                                role = Role.Button
-                                contentDescription = "Document options"
-                                onClick {
-                                    onTap()
-                                    true
-                                }
-                            }
-                            .onSizeChanged { rowWidthPx = it.width.toFloat() }
-                            .pointerInput(Unit) {
-                                awaitEachGesture {
-                                    val down = awaitFirstDown()
-                                    var totalDx = 0f
-                                    var lastX = down.position.x
-                                    var stillPressed = true
-                                    while (stillPressed) {
-                                        val event = awaitPointerEvent()
-                                        val change = event.changes.firstOrNull()
-                                        if (change != null && change.pressed) {
-                                            totalDx += change.position.x - lastX
-                                            lastX = change.position.x
-                                            if (kotlin.math.abs(totalDx) > swipeThresholdPx * 0.5f) change.consume()
-                                        }
-                                        stillPressed = event.changes.any { it.pressed }
-                                    }
-                                    if (kotlin.math.abs(totalDx) > swipeThresholdPx) {
-                                        handleSwipe(totalDx < 0)
-                                    } else {
-                                        onTap()
-                                    }
-                                }
-                            },
-                ) {
-                    shownThumb?.let { bmp ->
-                        Image(
-                            bitmap = bmp.asImageBitmap(),
-                            contentDescription = null,
-                            contentScale = ContentScale.FillBounds,
-                            modifier =
-                                Modifier
-                                    .size(width = 32.dp, height = 42.dp)
-                                    .clip(RoundedCornerShape(4.dp))
-                                    .graphicsLayer {
-                                        alpha = thumbnailAlpha * contentAlpha.value
-                                        translationX = slideX.value
-                                    }
-                                    .onGloballyPositioned { coords ->
-                                        val pos = coords.positionInRoot()
-                                        onThumbnailBoundsChanged(Rect(pos, coords.size.toSize()))
-                                    },
-                        )
-                    }
-                    Column(modifier = Modifier.weight(1f).padding(start = 12.dp)) {
-                        Text(
-                            text = shownName,
-                            style = MaterialTheme.typography.titleSmall,
-                            color = Color.White,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                            modifier =
-                                Modifier.graphicsLayer {
-                                    alpha = contentAlpha.value
-                                    translationX = slideX.value
-                                },
-                        )
-                        Text(
-                            text = subtitle,
-                            modifier = Modifier.testTag("page-count"),
-                            style = MaterialTheme.typography.bodySmall,
-                            color = OnSurfaceSecondary,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                    }
-                }
+                HeaderDocumentSwitcher(
+                    displayName, subtitle, thumbnail, thumbnailAlpha, contentResolver,
+                    adjacentDocument, onTap, onSwitchDocument, onThumbnailBoundsChanged,
+                    onSwipeActive, Modifier.weight(1f),
+                )
                 IconGlyphButton(
                     icon = Icons.Filled.Close,
                     contentDescription = "Close",
@@ -472,7 +333,15 @@ private fun CollapsedBar(
                 )
                 InvertToggleButton(invertColors = invertColors, onClick = onToggleInvert)
             }
-            Spacer(Modifier.height(GRADIENT_EXTRA_FADE_DP.dp))
+            Spacer(
+                Modifier.fillMaxWidth().height(GRADIENT_EXTRA_FADE_DP.dp).background(
+                    Brush.verticalGradient(
+                        0f to Color.Black,
+                        .25f to Color.Black,
+                        1f to Color.Transparent,
+                    ),
+                ),
+            )
         }
     }
 }

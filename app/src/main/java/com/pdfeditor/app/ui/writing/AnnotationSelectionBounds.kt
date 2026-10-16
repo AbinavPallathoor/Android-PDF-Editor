@@ -30,12 +30,13 @@ internal fun annotationSelectionBounds(
                 .75f,
             )
         is TextBoxAnnotation -> {
-            val lines = annotation.text.split('\n')
+            val lines = annotation.text.replace("\r\n", "\n").replace('\r', '\n').split('\n')
             PdfRect(
                 annotation.position.x,
                 annotation.position.y - annotation.fontSizePoints,
-                annotation.position.x + lines.maxOf { measureText(it, annotation.fontSizePoints) },
-                annotation.position.y + (lines.size - 1) * annotation.fontSizePoints * 1.25f + annotation.fontSizePoints * .25f,
+                annotation.position.x + (annotation.widthPoints ?: lines.maxOf { measureText(it, annotation.fontSizePoints) }),
+                annotation.position.y - annotation.fontSizePoints +
+                    (annotation.heightPoints ?: (lines.size * annotation.fontSizePoints * 1.25f)),
             )
         }
         is HighlightAnnotation ->

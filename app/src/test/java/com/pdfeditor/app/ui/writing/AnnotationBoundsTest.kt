@@ -16,4 +16,11 @@ class AnnotationBoundsTest {
         val text = TextBoxAnnotation("t", PdfPoint(290f, 390f), "Hello\nWorld", 20f, -1)
         assertEquals(PdfPoint(240f, 370f), (clampAnnotationToPage(text, 300f, 400f) as TextBoxAnnotation).position)
     }
+
+    @Test fun `moving a resized text box keeps its empty space inside the page`() {
+        val text = TextBoxAnnotation("t", PdfPoint(290f, 390f), "Hi", 20f, -1, widthPoints = 180f, heightPoints = 100f)
+        val moved = clampAnnotationToPage(text, 300f, 400f) as TextBoxAnnotation
+        assertEquals(PdfPoint(120f, 320f), moved.position)
+        assertEquals(text.copy(position = moved.position), moved)
+    }
 }

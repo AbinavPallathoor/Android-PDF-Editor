@@ -7,6 +7,7 @@ import android.os.ParcelFileDescriptor
 import androidx.lifecycle.ViewModelStore
 import androidx.test.core.app.ApplicationProvider
 import com.pdfeditor.app.data.cache.DocumentDraftStore
+import com.pdfeditor.app.data.fonts.FontRepository
 import com.pdfeditor.app.data.pdf.PdfBoxDocumentContent
 import com.pdfeditor.app.domain.DrawStroke
 import com.pdfeditor.app.domain.PdfPoint
@@ -72,6 +73,34 @@ class ReaderViewModelTest {
         stores.forEach { it.clear() }
         Dispatchers.resetMain()
     }
+
+    @Test
+    fun `dirty draft recovers a lost custom font from the original pdf without losing edits`() =
+        runTest {
+            val repository = FontRepository(requireNotNull(workingCopies.parentFile))
+            val font = FontRepository.openBuiltIn("droid-mono").use { repository.importFont(it, "My mono") }
+            val text = TextBoxAnnotation("custom", PdfPoint(40f, 90f), "Original text", 14f, -16777216, fontId = font.id)
+            val source =
+                PdfBoxDocumentContent(repository).writeAnnotations(
+                    fixture(),
+                    File(temporary.root, "font-source.pdf"),
+                    mapOf(0 to listOf(text)),
+                )
+            val vm = open(source)
+            var initial = ready(vm)
+            val ink = DrawStroke("new-ink", listOf(PdfPoint(10f, 20f), PdfPoint(30f, 40f)), -16777216, 2f)
+            initial = changed(vm, initial) { vm.addAnnotation(initial.pageIds[0], ink) }
+            vm.flush()
+            File(workingCopies.parentFile, "fonts/${font.id}.ttf").delete()
+            File(workingCopies.parentFile, "fonts/${font.id}.json").delete()
+            assertFalse(repository.contains(font.id))
+            val restoredVm = open(source)
+            val restored = ready(restoredVm)
+            assertEquals(initial.annotations, restored.annotations)
+            assertTrue(restored.dirty)
+            assertTrue("The exact embedded font must be restored before editing the draft", repository.contains(font.id))
+            assertEquals(listOf(text, ink), content.readAnnotations(restoredVm.export().file)[0])
+        }
 
     @Test
     fun `source annotations import on their own pages without changing original bytes`() =

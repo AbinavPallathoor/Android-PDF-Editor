@@ -95,3 +95,16 @@ Roboto Regular (bundled font)
   SHA-256: 56a45233d29f11b4dfb86d248e921939d115778f87325e7ae8cc108383d6664d
   Copyright 2015 Google Inc. All Rights Reserved.
   License copy: app/src/main/assets/fonts/LICENSE-Roboto.txt
+
+Droid Serif Regular / Droid Sans Mono (bundled fonts)
+  Copyright (c) 2005-2008, The Android Open Source Project
+  License: Apache-2.0
+  Source: https://android.googlesource.com/platform/frameworks/base/+/android-4.4_r1/data/fonts/
+  Assets (unmodified): DroidSerif-Regular.ttf, DroidSansMono.ttf
+  License evidence: README.txt explicitly licenses this directory under Apache 2;
+    MODULE_LICENSE_APACHE2 and NOTICE are present in the same AOSP revision.
+  License copy: app/src/main/assets/fonts/LICENSE-Droid.txt (AOSP NOTICE)
+  SHA-256 DroidSerif-Regular.ttf:
+    22aea9471bea5bce1ec3bf7136c84f075b3d11cf09dffdc3dba05e570094cbde
+  SHA-256 DroidSansMono.ttf:
+    12b552de765dc1265d64f9f5566649930dde4dba07da0251d9f92801e70a1047

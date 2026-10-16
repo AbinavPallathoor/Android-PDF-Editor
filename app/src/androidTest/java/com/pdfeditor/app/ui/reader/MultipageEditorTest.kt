@@ -20,6 +20,7 @@ import androidx.compose.ui.test.longClick
 import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performImeAction
 import androidx.compose.ui.test.performScrollTo
@@ -129,6 +130,88 @@ class MultipageEditorTest {
     }
 
     @Test
+    fun resizingSelectedTextReflowsItWithoutChangingItsFontAndIsOneUndoStep() {
+        launch()
+        enterEditing()
+        compose.onNodeWithTag("tool-TEXT").performClick()
+        compose.onNodeWithTag("pdf-page-0").performTouchInput {
+            down(Offset(width * .2f, height * .35f))
+            up()
+        }
+        val raw = "Resize this annotation without changing the font size"
+        compose.onNodeWithTag("annotation-text").performTextInput(raw)
+        compose.onNodeWithTag("annotation-text").performImeAction()
+        val before = doc.annotationsAt(0).single() as TextBoxAnnotation
+        val original = compose.onNodeWithTag("object-selection-${before.id}").getUnclippedBoundsInRoot()
+        compose.onNodeWithTag("text-resize-bottom-right").performTouchInput {
+            down(center)
+            moveTo(center + Offset(-140f, 50f), 240)
+            up()
+        }
+        val after = doc.annotationsAt(0).single() as TextBoxAnnotation
+        val resized = compose.onNodeWithTag("object-selection-${before.id}").getUnclippedBoundsInRoot()
+        assertTrue("Dragging the handle must narrow the box", resized.right - resized.left < original.right - original.left - 20.dp)
+        assertEquals(before.fontSizePoints, after.fontSizePoints)
+        assertTrue("Narrowing reflows all the original words", after.text.count { it == '\n' } > before.text.count { it == '\n' })
+        assertEquals(raw, after.text.replace('\n', ' ').replace(Regex(" +"), " ").trim())
+        compose.onNodeWithTag("undo").performClick()
+        assertEquals(before, doc.annotationsAt(0).single())
+        compose.onNodeWithTag("redo").performClick()
+        assertEquals(after, doc.annotationsAt(0).single())
+    }
+
+    @Test
+    fun selectedTextColourAndFontChangeWithoutOpeningATextDialog() {
+        launch()
+        enterEditing()
+        compose.onNodeWithTag("tool-TEXT").performClick()
+        compose.onNodeWithTag("pdf-page-0").performTouchInput {
+            down(Offset(width * .2f, height * .35f))
+            up()
+        }
+        compose.onNodeWithTag("annotation-text").performTextInput("A note with its own style")
+        compose.onNodeWithTag("annotation-text").performImeAction()
+        val before = doc.annotationsAt(0).single() as TextBoxAnnotation
+        compose.onNodeWithTag("font-options").performClick()
+        compose.onNodeWithTag("font-option-droid-serif").performClick()
+        compose.waitUntil(5_000) { (doc.annotationsAt(0).single() as TextBoxAnnotation).fontId == "droid-serif" }
+        val serif = doc.annotationsAt(0).single() as TextBoxAnnotation
+        assertEquals("droid-serif", serif.fontId)
+        assertEquals(before.fontSizePoints, serif.fontSizePoints)
+        compose.onNodeWithTag("ink-options").performClick()
+        compose.onNodeWithTag("ink-color-2").performClick()
+        assertEquals(0xFFFF3B30.toInt(), (doc.annotationsAt(0).single() as TextBoxAnnotation).colorArgb)
+        compose.onNodeWithTag("undo").performClick()
+        assertEquals(serif, doc.annotationsAt(0).single())
+        compose.onNodeWithTag("undo").performClick()
+        assertEquals(before, doc.annotationsAt(0).single())
+        compose.onNodeWithTag("font-options").performClick()
+        compose.onNodeWithTag("import-font").assertIsDisplayed()
+    }
+
+    @Test
+    fun cancellingATextResizeDiscardsThePreview() {
+        launch()
+        enterEditing()
+        compose.onNodeWithTag("tool-TEXT").performClick()
+        compose.onNodeWithTag("pdf-page-0").performTouchInput {
+            down(Offset(width * .2f, height * .35f))
+            up()
+        }
+        compose.onNodeWithTag("annotation-text").performTextInput("Keep this text intact")
+        compose.onNodeWithTag("annotation-text").performImeAction()
+        val before = doc.annotationsAt(0).single()
+        compose.onNodeWithTag("text-resize-bottom-right").performTouchInput {
+            down(center)
+            moveTo(center + Offset(-60f, 30f), 160)
+            cancel()
+        }
+        compose.waitForIdle()
+        assertEquals(before, doc.annotationsAt(0).single())
+        compose.onNodeWithTag("text-resize-bottom-right").assertIsDisplayed()
+    }
+
+    @Test
     fun longPagedNoteKeepsTheCaretVisibleAcrossSuccessiveTypingUpdates() {
         ui = ready().copy(paged = true)
         launch(height = 450.dp)
@@ -152,7 +235,10 @@ class MultipageEditorTest {
             val save = compose.onNodeWithTag("save-edits").getUnclippedBoundsInRoot()
             val top = bounds.top + with(compose.density) { caret.top.toDp() }
             val bottom = bounds.top + with(compose.density) { caret.bottom.toDp() }
-            assertTrue("Caret must stay within the visible page area", top >= viewport.top && bottom <= save.top)
+            assertTrue(
+                "Caret [$top, $bottom] must stay within visible page [${viewport.top}, ${save.top}]",
+                top >= viewport.top && bottom <= save.top,
+            )
         }
         compose.onNodeWithTag("annotation-text").performImeAction()
     }
@@ -276,13 +362,53 @@ class MultipageEditorTest {
     }
 
     @Test
+    fun headerFadeHasNoHardSeamAtTheTopOfThePaper() {
+        launch()
+        val page = compose.onNodeWithTag("pdf-page-0").getUnclippedBoundsInRoot()
+        val pixels = compose.onRoot().captureToImage().toPixelMap()
+        val edge = with(compose.density) { page.top.roundToPx() }
+        val x = pixels.width / 2
+        val largestStep =
+            ((edge - 3)..(edge + 3)).maxOf { y ->
+                kotlin.math.abs(pixels[x, y].red - pixels[x, y - 1].red)
+            }
+        assertTrue("The header fade must blend continuously into the paper, without a dark/white step", largestStep < .12f)
+    }
+
+    @Test
+    fun returningToTheTopRevealsTheHeaderAndKeepsTheFirstPageBelowIt() {
+        launch()
+        compose.onNodeWithTag("scroll-document").performScrollToIndex(1)
+        compose.onNodeWithTag("scroll-document").performScrollToIndex(0)
+        compose.mainClock.autoAdvance = false
+        compose.mainClock.advanceTimeBy(4000)
+        compose.onNodeWithTag("document-details").assertIsDisplayed()
+        val header = compose.onNodeWithTag("document-details").getUnclippedBoundsInRoot()
+        val page = compose.onNodeWithTag("pdf-page-0").getUnclippedBoundsInRoot()
+        assertTrue("The first page must start below all header controls", page.top >= header.bottom)
+    }
+
+    @Test
+    fun firstPageInPagedViewAlsoLeavesRoomForTheHeader() {
+        ui = ready().copy(paged = true)
+        launch()
+        compose.mainClock.autoAdvance = false
+        compose.mainClock.advanceTimeBy(4000)
+        compose.onNodeWithTag("document-details").assertIsDisplayed()
+        val header = compose.onNodeWithTag("document-details").getUnclippedBoundsInRoot()
+        val page = compose.onNodeWithTag("pdf-page-0").getUnclippedBoundsInRoot()
+        assertTrue("Paged content must leave the header controls unobstructed", page.top >= header.bottom)
+    }
+
+    @Test
     fun idleReadingHidesChromeAndATapBringsItBack() {
         launch()
         compose.onNodeWithTag("close-document").assertIsDisplayed()
+        compose.onNodeWithTag("scroll-document").performScrollToIndex(1)
         compose.mainClock.autoAdvance = false
         compose.mainClock.advanceTimeBy(4000)
         compose.onNodeWithTag("close-document").assertDoesNotExist()
-        compose.onNodeWithTag("pdf-page-0").performTouchInput {
+        compose.onNodeWithTag("pdf-page-1").performTouchInput {
             down(Offset(width * .7f, height * .6f))
             up()
         }

@@ -1,8 +1,13 @@
 package com.pdfeditor.app.ui.reader
 
 import android.graphics.Bitmap
+import android.graphics.Typeface
+import android.provider.OpenableColumns
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.Canvas
@@ -74,11 +79,14 @@ import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import com.pdfeditor.app.R
 import com.pdfeditor.app.data.cache.SavedSignature
 import com.pdfeditor.app.data.cache.SignatureRepository
+import com.pdfeditor.app.data.fonts.EditorFont
+import com.pdfeditor.app.data.fonts.FontRepository
 import com.pdfeditor.app.domain.Annotation
 import com.pdfeditor.app.domain.HighlightAnnotation
 import com.pdfeditor.app.domain.PdfPoint
@@ -88,8 +96,10 @@ import com.pdfeditor.app.domain.SignaturePlacement
 import com.pdfeditor.app.domain.TextBoxAnnotation
 import com.pdfeditor.app.ui.writing.clampAnnotationToPage
 import com.pdfeditor.app.ui.writing.hitTestAnnotation
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.UUID
 import kotlin.math.roundToInt
@@ -117,7 +127,8 @@ fun ReaderScreen(
     onCompress: () -> Unit = {},
     modifier: Modifier = Modifier,
     adjacentDocument: (Boolean) -> RecentDocument? = { null },
-    onSwitchDocument: (Boolean) -> Unit = {},
+    onSwitchDocument: suspend (RecentDocument) -> Boolean = { false },
+    onContentReady: () -> Unit = {},
     onEditText: (String, TextBoxAnnotation, String) -> Unit = { pageId, annotation, _ ->
         val exists = (uiState as? ReaderUiState.Ready)?.annotations?.values?.flatten()?.any { it.id == annotation.id } == true
         if (annotation.text.isEmpty()) {
@@ -129,6 +140,9 @@ fun ReaderScreen(
         }
     },
 ) {
+    if (uiState is ReaderUiState.Error || uiState == ReaderUiState.PasswordProtected) {
+        LaunchedEffect(uiState) { onContentReady() }
+    }
     when (uiState) {
         ReaderUiState.Loading -> Box(modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
         is ReaderUiState.Error ->
@@ -164,6 +178,7 @@ fun ReaderScreen(
                 adjacentDocument,
                 onSwitchDocument,
                 onEditText,
+                onContentReady,
             )
     }
 }
@@ -191,8 +206,9 @@ private fun EditorDocument(
     onCompress: () -> Unit,
     modifier: Modifier,
     adjacentDocument: (Boolean) -> RecentDocument?,
-    onSwitchDocument: (Boolean) -> Unit,
+    onSwitchDocument: suspend (RecentDocument) -> Boolean,
     onEditText: (String, TextBoxAnnotation, String) -> Unit,
+    onContentReady: () -> Unit,
 ) {
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
@@ -212,12 +228,157 @@ private fun EditorDocument(
     var editing by remember { mutableStateOf(false) }
     var chromeVisible by remember { mutableStateOf(true) }
     var chromeTick by remember { mutableIntStateOf(0) }
+    var headerHeight by remember { mutableIntStateOf(0) }
     var titleThumbnail by remember(state.documentVersion) { mutableStateOf<Bitmap?>(null) }
     var zoomVisible by remember { mutableStateOf(false) }
     var selection by remember { mutableStateOf<TextSelection?>(null) }
     var textTarget by remember { mutableStateOf<PageTextEdit?>(null) }
     var caretBounds by remember { mutableStateOf<Rect?>(null) }
     var selectedObject by remember { mutableStateOf<Pair<String, String>?>(null) }
+    val density = LocalDensity.current
+    val textMeasurer = rememberTextMeasurer()
+    val fontRepository = remember(context.filesDir) { FontRepository(context.filesDir) }
+    var fonts by remember { mutableStateOf<List<EditorFont>>(emptyList()) }
+    var typefaces by remember { mutableStateOf<Map<String, Typeface>>(emptyMap()) }
+    var currentFontId by remember { mutableStateOf("roboto") }
+    var fontMessage by remember { mutableStateOf<String?>(null) }
+    var importingFont by remember { mutableStateOf(false) }
+    var fontsLoaded by remember { mutableStateOf(false) }
+    var fontLoadRequest by remember { mutableIntStateOf(0) }
+    val currentReaderState by rememberUpdatedState(state)
+    val usedFontIds = state.annotations.values.flatten().filterIsInstance<TextBoxAnnotation>().map { it.fontId }.toSet()
+    val missingFontNotice =
+        if (fontsLoaded && usedFontIds.any { it !in typefaces }) {
+            "A text font is unavailable. Select its box and add the original font, or choose another font."
+        } else {
+            null
+        }
+    val selectedText =
+        selectedObject?.let { (pageId, id) ->
+            state.pageIds.indexOf(pageId).takeIf { it >= 0 }?.let { pageIndex ->
+                state.annotations[pageIndex].orEmpty().firstOrNull { it.id == id } as? TextBoxAnnotation
+            }
+        }
+
+    suspend fun reloadFonts(extraId: String? = null) {
+        val request = ++fontLoadRequest
+        val required = FontRepository.BUILT_INS.map { it.id }.toSet() + usedFontIds + currentFontId + listOfNotNull(extraId)
+        val loaded =
+            withContext(Dispatchers.IO) {
+                val available = fontRepository.list()
+                val faces =
+                    required.mapNotNull { id ->
+                        try {
+                            id to fontRepository.typeface(id)
+                        } catch (failure: Exception) {
+                            if (failure is kotlinx.coroutines.CancellationException) throw failure
+                            null
+                        }
+                    }.toMap()
+                available to faces
+            }
+        if (request == fontLoadRequest) {
+            fonts = loaded.first
+            typefaces = typefaces + loaded.second
+            fontsLoaded = true
+        }
+    }
+    LaunchedEffect(fontRepository, usedFontIds, currentFontId) { reloadFonts() }
+    LaunchedEffect(fontMessage) {
+        if (fontMessage != null) {
+            delay(4500)
+            fontMessage = null
+        }
+    }
+
+    fun applyTextStyle(
+        font: String? = null,
+        argb: Int? = null,
+    ) {
+        if (font != null) currentFontId = font
+        if (argb != null) color = argb
+        val target = selectedObject ?: return
+        val pageId = target.first
+        val latest = currentReaderState
+        val pageIndex = latest.pageIds.indexOf(pageId)
+        if (pageIndex < 0) return
+        val original = latest.annotations[pageIndex].orEmpty().firstOrNull { it.id == target.second } as? TextBoxAnnotation ?: return
+        if (font == null) {
+            val changed = original.copy(colorArgb = argb ?: original.colorArgb)
+            onReplace(pageId, changed)
+            textTarget?.takeIf { it.annotation.id == changed.id }?.let { edit ->
+                textTarget = edit.copy(annotation = edit.annotation.copy(colorArgb = changed.colorArgb))
+            }
+            return
+        }
+        val face = typefaces[font]
+        if (face == null) {
+            fontMessage = "This font is unavailable. Add the original font again."
+            return
+        }
+        val changed = original.copy(fontId = font ?: original.fontId, colorArgb = argb ?: original.colorArgb)
+        val pageWidth = latest.pageWidthsPoints[pageIndex]
+        val pageHeight = pageWidth * latest.pageAspectRatios[pageIndex]
+        val raw = textTarget?.takeIf { it.annotation.id == original.id }?.annotation?.text ?: original.sourceText ?: original.text
+        val width = original.widthPoints ?: (pageWidth - original.position.x - 8f).coerceAtLeast(1f)
+        val wrapped = textMeasurer.reflowTextBox(changed, raw, width, density, face)
+        val contentHeight = (wrapped.count { it == '\n' } + 1) * original.fontSizePoints * 1.25f
+        if (contentHeight > pageHeight) {
+            fontMessage = "This font needs more room. Widen the text box first."
+            return
+        }
+        val formatted =
+            clampAnnotationToPage(
+                changed.copy(text = wrapped, sourceText = raw, heightPoints = maxOf(original.heightPoints ?: 0f, contentHeight)),
+                pageWidth,
+                pageHeight,
+            ) as TextBoxAnnotation
+        onReplace(pageId, formatted)
+        textTarget?.takeIf { it.annotation.id == formatted.id }?.let { edit ->
+            textTarget = edit.copy(annotation = formatted.copy(text = raw), pdfText = wrapped)
+        }
+    }
+
+    fun chooseFont(id: String) {
+        val intended = selectedObject
+        scope.launch {
+            try {
+                val face = withContext(Dispatchers.IO) { fontRepository.typeface(id) }
+                typefaces = typefaces + (id to face)
+                if (selectedObject == intended) applyTextStyle(font = id)
+            } catch (failure: Exception) {
+                if (failure is kotlinx.coroutines.CancellationException) throw failure
+                fontMessage = failure.message ?: "This font is unavailable. Add the original font again."
+            }
+        }
+    }
+    val importFont =
+        rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+            if (uri != null) {
+                scope.launch {
+                    importingFont = true
+                    val intended = selectedObject
+                    try {
+                        val imported =
+                            withContext(Dispatchers.IO) {
+                                val name =
+                                    context.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use {
+                                            cursor ->
+                                        if (cursor.moveToFirst()) cursor.getString(0) else null
+                                    } ?: "Imported font"
+                                requireNotNull(context.contentResolver.openInputStream(uri)).use { fontRepository.importFont(it, name) }
+                            }
+                        reloadFonts(imported.id)
+                        if (selectedObject == intended) applyTextStyle(font = imported.id)
+                    } catch (e: Exception) {
+                        if (e is kotlinx.coroutines.CancellationException) throw e
+                        fontMessage = e.message ?: "Could not import this font. Choose a TrueType (.ttf) font."
+                    } finally {
+                        importingFont = false
+                    }
+                }
+            }
+        }
     val focusManager = LocalFocusManager.current
     val keyboard = LocalSoftwareKeyboardController.current
 
@@ -238,6 +399,17 @@ private fun EditorDocument(
     val isPaged by rememberUpdatedState(state.paged)
     val pageCount by rememberUpdatedState(state.pageCount)
     val currentPage = (if (state.paged) pager.currentPage else list.firstVisibleItemIndex).coerceIn(0, state.pageCount - 1)
+    val atDocumentStart =
+        if (state.paged) {
+            pager.currentPage == 0 && !pager.isScrollInProgress && zoom <= 1.01f && panY == 0f
+        } else {
+            !list.canScrollBackward
+        }
+    val pinnedHeader = atDocumentStart && !editing
+    val headerInset by animateDpAsState(
+        if (pinnedHeader) with(LocalDensity.current) { headerHeight.toDp() } else 0.dp,
+        label = "document-header-space",
+    )
     LaunchedEffect(Unit) {
         signatures = signatureStore.load()
         activeSignature = signatures.lastOrNull()
@@ -344,7 +516,7 @@ private fun EditorDocument(
             val pageHeight = viewportWidth * zoom * state.pageAspectRatios[currentPage]
             val normalMaxY = ((pageHeight - usableHeight) / 2f).coerceAtLeast(0f)
             val caret = caretBounds
-            if (textTarget?.pageId == state.pageIds[currentPage] && caret != null && imeBottom > 0) {
+            if (textTarget?.pageId == state.pageIds[currentPage] && caret != null) {
                 val origin = (usableHeight - pageHeight) / 2f + panY
                 val top = origin + caret.top
                 val bottom = origin + caret.bottom
@@ -381,7 +553,7 @@ private fun EditorDocument(
     val finishTextNow by rememberUpdatedState(::finishText)
     Box(modifier.fillMaxSize().background(Color.Black).imePadding()) {
         Box(
-            Modifier.fillMaxSize().clipToBounds().testTag("document-surface")
+            Modifier.fillMaxSize().padding(top = headerInset).clipToBounds().testTag("document-surface")
                 .onSizeChanged {
                     viewportWidth = it.width.toFloat()
                     viewportHeight = it.height.toFloat()
@@ -432,7 +604,10 @@ private fun EditorDocument(
                     val renderHeight = (renderWidth * state.pageAspectRatios[index]).roundToInt().coerceAtLeast(1)
                     var bitmap by remember(pageId, state.documentVersion, renderWidth) { mutableStateOf<Bitmap?>(null) }
                     var words by remember(pageId) { mutableStateOf<List<PdfTextWord>>(emptyList()) }
-                    LaunchedEffect(pageId, state.documentVersion, renderWidth) { bitmap = renderPage(index, renderWidth, renderHeight) }
+                    LaunchedEffect(pageId, state.documentVersion, renderWidth) {
+                        bitmap = renderPage(index, renderWidth, renderHeight)
+                        if (index == currentPage) onContentReady()
+                    }
                     LaunchedEffect(pageId) { words = runCatching { loadText(index) }.getOrDefault(emptyList()) }
                     DocumentPageSurface(
                         pageId,
@@ -452,6 +627,8 @@ private fun EditorDocument(
                         inlineText = textTarget?.takeIf { it.pageId == pageId },
                         onFinishText = ::finishText,
                         onInlineCaret = { if (textTarget?.pageId == pageId) caretBounds = it },
+                        fontTypeface = { typefaces[it] ?: Typeface.DEFAULT },
+                        fontAvailable = { it in typefaces },
                         onInlineChange = { raw, pdfText ->
                             textTarget?.takeIf { it.pageId == pageId }?.let { edit ->
                                 val height = state.pageWidthsPoints[index] * state.pageAspectRatios[index]
@@ -465,12 +642,25 @@ private fun EditorDocument(
                                             height - (lines - 1) * font * 1.25f - font * .25f,
                                         )
                                     val position = edit.annotation.position.copy(y = baseline)
+                                    val boxHeight = maxOf(edit.annotation.heightPoints ?: 0f, contentHeight)
                                     textTarget =
                                         edit.copy(
-                                            annotation = edit.annotation.copy(text = raw, position = position),
+                                            annotation =
+                                                edit.annotation.copy(
+                                                    text = raw, position = position, heightPoints = boxHeight, sourceText = raw,
+                                                ),
                                             pdfText = pdfText,
                                         )
-                                    onEditText(pageId, edit.annotation.copy(text = pdfText, position = position), edit.session)
+                                    onEditText(
+                                        pageId,
+                                        edit.annotation.copy(
+                                            text = pdfText,
+                                            position = position,
+                                            heightPoints = boxHeight,
+                                            sourceText = raw,
+                                        ),
+                                        edit.session,
+                                    )
                                 } else {
                                     android.widget.Toast.makeText(
                                         context,
@@ -492,12 +682,16 @@ private fun EditorDocument(
                             selectedObject = pageId to it.id
                         },
                         onReplace = { onReplace(pageId, it) }, onRemove = { onRemove(pageId, it) },
-                        onText = { point ->
+                        onText = editText@{ point ->
                             val existing =
                                 hitTestAnnotation(
                                     state.annotations[index].orEmpty().filterIsInstance<TextBoxAnnotation>(),
                                     point,
                                 ) as? TextBoxAnnotation
+                            if (existing != null && existing.fontId !in typefaces) {
+                                fontMessage = "Add the original font or choose another font before editing this text."
+                                return@editText
+                            }
                             val annotation =
                                 existing ?: TextBoxAnnotation(
                                     UUID.randomUUID().toString(),
@@ -505,12 +699,18 @@ private fun EditorDocument(
                                         point.x.coerceIn(4f, (state.pageWidthsPoints[index] - 48f).coerceAtLeast(4f)),
                                         point.y.coerceIn(14f, state.pageWidthsPoints[index] * state.pageAspectRatios[index] - 4f),
                                     ),
-                                    "", 14f, color,
+                                    "", 14f, color, fontId = currentFontId,
                                 )
                             caretBounds = null
-                            textTarget = PageTextEdit(pageId, annotation)
+                            textTarget =
+                                PageTextEdit(
+                                    pageId, annotation.copy(text = annotation.sourceText ?: annotation.text), pdfText = annotation.text,
+                                )
                             selectedObject = pageId to annotation.id
-                            if (existing != null) color = existing.colorArgb
+                            if (existing != null) {
+                                color = existing.colorArgb
+                                currentFontId = existing.fontId
+                            }
                         },
                         onSign = { point ->
                             val selected = activeSignature
@@ -645,7 +845,23 @@ private fun EditorDocument(
                         color = 0xFF000000.toInt()
                     }
                 },
-                onColor = { color = it }, onUndo = onUndo, onRedo = onRedo, onDone = ::finishEditing,
+                onColor = { applyTextStyle(argb = it) }, onUndo = onUndo, onRedo = onRedo, onDone = ::finishEditing,
+                fonts = fonts, fontId = selectedText?.fontId ?: currentFontId,
+                onChooseFont = if (tool == EditorTool.TEXT || selectedText != null) { id -> chooseFont(id) } else null,
+                onImportFont = {
+                    if (!importingFont) {
+                        importFont.launch(
+                            arrayOf(
+                                "font/ttf",
+                                "font/otf",
+                                "application/x-font-ttf",
+                                "application/x-font-opentype",
+                                "application/octet-stream",
+                            ),
+                        )
+                    }
+                },
+                fontTypeface = { typefaces[it] ?: Typeface.DEFAULT },
             )
         }
         AnimatedVisibility(
@@ -661,11 +877,13 @@ private fun EditorDocument(
                 style = MaterialTheme.typography.labelSmall,
             )
         }
-        state.message?.let { message ->
+        (fontMessage ?: missingFontNotice ?: state.message)?.let { message ->
             var dismissed by remember(message) { mutableStateOf(false) }
             LaunchedEffect(message) {
-                delay(4500)
-                dismissed = true
+                if (message != missingFontNotice) {
+                    delay(4500)
+                    dismissed = true
+                }
             }
             if (!dismissed) {
                 Surface(
@@ -679,7 +897,7 @@ private fun EditorDocument(
         }
         DocumentTitleBar(
             state.displayName, "${currentPage + 1} / ${state.pageCount}", titleThumbnail,
-            visible = chromeVisible, invertColors = state.invertColors,
+            visible = chromeVisible || pinnedHeader, invertColors = state.invertColors,
             contentResolver = context.contentResolver, adjacentDocument = adjacentDocument,
             onRename = onRename, onShare = onShare, onCompress = {
                 onCompress()
@@ -697,6 +915,7 @@ private fun EditorDocument(
                 }
             },
             onToggleInvert = onInvert, editing = editing,
+            onHeaderHeightChanged = { headerHeight = it },
             expandedContent = { dismiss ->
                 DocumentOptions(
                     state.paged,
