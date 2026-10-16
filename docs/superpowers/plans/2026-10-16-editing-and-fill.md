@@ -6,12 +6,12 @@
 
 ## First release
 
-- [ ] Add stroke/signature move and zoomed single-finger pan regressions; fix gesture arbitration without breaking selection, normal scrolling or multitouch.
-- [ ] Replace gradient header with solid black; retain camera-safe compact controls.
-- [ ] Add discard to DocumentEdits, ReaderViewModel and save menu; restore saved snapshot, clear history and persist reverted draft. Test structure, annotation, reopen and original bytes.
-- [ ] Verify close/navigation only persist private draft, never source; retain editable objects after export. Clarify requested leave behavior with user.
-- [ ] Make temporary external handoffs durable, validated, deduplicated and present in recents; label imported copies and preserve durable SAF behavior.
-- [ ] Run JVM, instrumented, lint, optimized release and signed upgrade checks. Update docs; bump v0.2.3, push and publish signed APK only, no screenshot assets.
+- [x] Add stroke/signature move and zoomed single-finger pan regressions; fix gesture arbitration without breaking selection, normal scrolling or multitouch.
+- [x] Replace gradient header with solid black; retain camera-safe compact controls.
+- [x] Add discard to DocumentEdits, ReaderViewModel and save menu; restore saved snapshot, clear history and persist reverted draft. Test structure, annotation, reopen and original bytes.
+- [x] Verify close/navigation only persist private draft, never source; retain editable objects after export. Clarify requested leave behavior with user.
+- [x] Make temporary external handoffs durable, validated, deduplicated and present in recents; label imported copies and preserve durable SAF behavior.
+- [x] Run JVM, instrumented, lint, optimized release and signed upgrade checks. Update docs; bump v0.2.3, push and publish signed APK only, no screenshot assets.
 
 ## Then field suggestions
 
