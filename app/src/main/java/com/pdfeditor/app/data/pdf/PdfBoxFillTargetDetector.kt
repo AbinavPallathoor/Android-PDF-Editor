@@ -36,87 +36,91 @@ class PdfBoxFillTargetDetector {
     suspend fun detect(
         source: File,
         pageIndex: Int,
+    ): List<PdfFillTarget> = withContext(Dispatchers.IO) { PDDocument.load(source).use { detect(it, pageIndex) } }
+
+    /** [document] must be an immutable read snapshot; callers serialize access to it. */
+    suspend fun detect(
+        document: PDDocument,
+        pageIndex: Int,
     ): List<PdfFillTarget> =
         withContext(Dispatchers.IO) {
-            PDDocument.load(source).use { document ->
-                require(pageIndex in 0 until document.numberOfPages) { "Fill target page does not exist" }
-                val page = document.getPage(pageIndex)
-                val coordinates = Coordinates(page)
-                val widgetBounds = mutableListOf<PdfRect>()
-                val targets = mutableListOf<PdfFillTarget>()
-                val pageWidgets = page.annotations.filterIsInstance<PDAnnotationWidget>().map { it.cosObject }.toSet()
-                document.documentCatalog.acroForm?.fieldTree?.forEachIndexed { fieldIndex, field ->
-                    currentCoroutineContext().ensureActive()
-                    if (field !is PDTerminalField) return@forEachIndexed
-                    field.widgets.forEachIndexed widgetLoop@{ widgetIndex, widget ->
-                        val widgetPage = widget.page
-                        if (widgetPage?.cosObject != page.cosObject && (widgetPage != null || widget.cosObject !in pageWidgets)) {
-                            return@widgetLoop
-                        }
-                        val bounds = widget.rectangle?.let(coordinates::fromNative) ?: return@widgetLoop
-                        if (!coordinates.contains(bounds)) return@widgetLoop
-                        // Ineligible widgets also reserve their area: their printed borders must
-                        // never reappear as guessed fields that bypass flags or existing values.
-                        widgetBounds += bounds
-                        if (field.isReadOnly || widget.isReadOnly || widget.isHidden || widget.isInvisible || widget.isNoView) {
-                            return@widgetLoop
-                        }
-                        val kind =
-                            when (field) {
-                                is PDTextField -> {
-                                    if (field.isPassword || field.isFileSelect || field.valueAsString.isNotBlank()) return@widgetLoop
-                                    FillTargetKind.TEXT
-                                }
-                                is PDSignatureField -> {
-                                    if (field.cosObject.getDictionaryObject(COSName.V) != null) return@widgetLoop
-                                    FillTargetKind.SIGNATURE
-                                }
-                                else -> return@widgetLoop
+            require(pageIndex in 0 until document.numberOfPages) { "Fill target page does not exist" }
+            val page = document.getPage(pageIndex)
+            val coordinates = Coordinates(page)
+            val widgetBounds = mutableListOf<PdfRect>()
+            val targets = mutableListOf<PdfFillTarget>()
+            val pageWidgets = page.annotations.filterIsInstance<PDAnnotationWidget>().map { it.cosObject }.toSet()
+            document.documentCatalog.acroForm?.fieldTree?.forEachIndexed { fieldIndex, field ->
+                currentCoroutineContext().ensureActive()
+                if (field !is PDTerminalField) return@forEachIndexed
+                field.widgets.forEachIndexed widgetLoop@{ widgetIndex, widget ->
+                    val widgetPage = widget.page
+                    if (widgetPage?.cosObject != page.cosObject && (widgetPage != null || widget.cosObject !in pageWidgets)) {
+                        return@widgetLoop
+                    }
+                    val bounds = widget.rectangle?.let(coordinates::fromNative) ?: return@widgetLoop
+                    if (!coordinates.contains(bounds)) return@widgetLoop
+                    // Ineligible widgets also reserve their area: their printed borders must
+                    // never reappear as guessed fields that bypass flags or existing values.
+                    widgetBounds += bounds
+                    if (field.isReadOnly || widget.isReadOnly || widget.isHidden || widget.isInvisible || widget.isNoView) {
+                        return@widgetLoop
+                    }
+                    val kind =
+                        when (field) {
+                            is PDTextField -> {
+                                if (field.isPassword || field.isFileSelect || field.valueAsString.isNotBlank()) return@widgetLoop
+                                FillTargetKind.TEXT
                             }
+                            is PDSignatureField -> {
+                                if (field.cosObject.getDictionaryObject(COSName.V) != null) return@widgetLoop
+                                FillTargetKind.SIGNATURE
+                            }
+                            else -> return@widgetLoop
+                        }
+                    targets +=
+                        PdfFillTarget(
+                            "widget:$pageIndex:$fieldIndex:$widgetIndex:${field.fullyQualifiedName}",
+                            coordinates.toDisplayed(bounds),
+                            kind,
+                            field.alternateFieldName?.takeIf { it.isNotBlank() } ?: field.partialName.orEmpty(),
+                        )
+                }
+            }
+            currentCoroutineContext().ensureActive()
+            val words =
+                PdfBoxDocumentContent().extractText(document, pageIndex).map { word ->
+                    word.copy(bounds = coordinates.fromDisplayed(word.bounds))
+                }
+            val labels = words.mapNotNull { word -> labelKind(word.text)?.let { Label(word, it) } }
+            if (labels.isNotEmpty()) {
+                val graphics = PrintedGraphics(page, coordinates)
+                graphics.processPage(page)
+                currentCoroutineContext().ensureActive()
+                if (!graphics.tooComplex) {
+                    val foreignMarks =
+                        page.annotations.filterNot { it is PDAnnotationWidget || it.isHidden || it.isInvisible || it.isNoView }
+                            .mapNotNull { it.rectangle?.let(coordinates::fromNative) }
+                    graphics.outlines.forEach { bounds ->
+                        if (!coordinates.contains(bounds) || widgetBounds.any { overlaps(it, bounds) }) return@forEach
+                        val label =
+                            labels.filter { near(it.word.bounds, bounds) }
+                                .minByOrNull { distance(it.word.bounds, bounds) } ?: return@forEach
+                        val interior = bounds.inset(2f)
+                        if (words.any { it.text.isNotBlank() && overlaps(interior, it.bounds) }) return@forEach
+                        if ((graphics.occupied + foreignMarks).any { overlaps(interior, it) }) return@forEach
+                        if (targets.any { overlaps(coordinates.fromDisplayed(it.bounds), bounds) }) return@forEach
                         targets +=
                             PdfFillTarget(
-                                "widget:$pageIndex:$fieldIndex:$widgetIndex:${field.fullyQualifiedName}",
+                                "printed:$pageIndex:${bounds.left}:${bounds.top}:${bounds.right}:${bounds.bottom}",
                                 coordinates.toDisplayed(bounds),
-                                kind,
-                                field.alternateFieldName?.takeIf { it.isNotBlank() } ?: field.partialName.orEmpty(),
+                                label.kind,
+                                label.word.text.trim(),
                             )
                     }
                 }
-                currentCoroutineContext().ensureActive()
-                val words =
-                    PdfBoxDocumentContent().extractText(source, pageIndex).map { word ->
-                        word.copy(bounds = coordinates.fromDisplayed(word.bounds))
-                    }
-                val labels = words.mapNotNull { word -> labelKind(word.text)?.let { Label(word, it) } }
-                if (labels.isNotEmpty()) {
-                    val graphics = PrintedGraphics(page, coordinates)
-                    graphics.processPage(page)
-                    currentCoroutineContext().ensureActive()
-                    if (!graphics.tooComplex) {
-                        val foreignMarks =
-                            page.annotations.filterNot { it is PDAnnotationWidget || it.isHidden || it.isInvisible || it.isNoView }
-                                .mapNotNull { it.rectangle?.let(coordinates::fromNative) }
-                        graphics.outlines.forEach { bounds ->
-                            if (!coordinates.contains(bounds) || widgetBounds.any { overlaps(it, bounds) }) return@forEach
-                            val label =
-                                labels.filter { near(it.word.bounds, bounds) }
-                                    .minByOrNull { distance(it.word.bounds, bounds) } ?: return@forEach
-                            val interior = bounds.inset(2f)
-                            if (words.any { it.text.isNotBlank() && overlaps(interior, it.bounds) }) return@forEach
-                            if ((graphics.occupied + foreignMarks).any { overlaps(interior, it) }) return@forEach
-                            if (targets.any { overlaps(coordinates.fromDisplayed(it.bounds), bounds) }) return@forEach
-                            targets +=
-                                PdfFillTarget(
-                                    "printed:$pageIndex:${bounds.left}:${bounds.top}:${bounds.right}:${bounds.bottom}",
-                                    coordinates.toDisplayed(bounds),
-                                    label.kind,
-                                    label.word.text.trim(),
-                                )
-                        }
-                    }
-                }
-                targets.sortedWith(compareBy<PdfFillTarget> { it.bounds.top }.thenBy { it.bounds.left }).take(100)
             }
+            targets.sortedWith(compareBy<PdfFillTarget> { it.bounds.top }.thenBy { it.bounds.left }).take(100)
         }
 
     private data class Label(val word: PdfTextWord, val kind: FillTargetKind)

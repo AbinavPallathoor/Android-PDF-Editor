@@ -83,9 +83,13 @@ flags and cold/warm VIEW/SEND requests flow through `OpenDocumentRequest`.
 It detects eligible empty text/signature widgets plus conservative English-labelled
 printed boxes/lines, accounting for crop and rotation. Filled/protected/hidden
 widgets and occupied graphics are excluded; explicit clipping suppresses printed
-guesses for the page. There is no OCR. `withPdfReadCopy` owns acquisition and
-cleanup in a NonCancellable receiving context, then restores caller cancellation
-for detection; never return an acquired resource into a canceled dispatcher.
+guesses for the page. There is no OCR. `PdfFillTargetSource` copies each
+renderer base once and keeps one PDFBox document open for every page lookup;
+`ReaderViewModel` holds its operation lock only for that snapshot, never during
+detection, and closes the source whenever the base changes. Acquired copies and
+documents are stored on the owner inside NonCancellable blocks; never return an
+acquired resource into a canceled caller. Close may race an in-flight lookup;
+whichever finishes last releases.
 Hand shows contextual Fill/Sign hints only while editing. Text opens inline at
 the field bounds; signatures fit/center the target, including a deferred capture
 when no saved signature exists. Hints hide under occupied app annotations and

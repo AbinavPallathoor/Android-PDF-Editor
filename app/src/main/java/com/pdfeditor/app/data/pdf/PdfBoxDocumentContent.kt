@@ -118,49 +118,52 @@ class PdfBoxDocumentContent(private val fontRepository: FontRepository? = null) 
     suspend fun extractText(
         source: File,
         pageIndex: Int,
-    ): List<PdfTextWord> =
-        withContext(Dispatchers.IO) {
-            PDDocument.load(source).use { document ->
-                require(pageIndex in 0 until document.numberOfPages) { "Text page does not exist" }
-                val words = mutableListOf<PdfTextWord>()
-                val coordinates = PageCoordinates(document.getPage(pageIndex))
-                val stripper =
-                    object : PDFTextStripper() {
-                        override fun writeString(
-                            text: String,
-                            textPositions: MutableList<TextPosition>,
-                        ) {
-                            if (text.isEmpty() || textPositions.isEmpty()) return
-                            val points =
-                                textPositions.flatMap { position ->
-                                    // PDFBox's matrix/end point are already relative to the crop box.
-                                    val matrix = position.textMatrix
-                                    val start = PdfPoint(matrix.translateX, matrix.translateY)
-                                    val end = PdfPoint(position.endX, position.endY)
-                                    val length = hypot(end.x - start.x, end.y - start.y).coerceAtLeast(.001f)
-                                    val upX = -(end.y - start.y) / length * position.heightDir
-                                    val upY = (end.x - start.x) / length * position.heightDir
-                                    listOf(start, end, PdfPoint(start.x + upX, start.y + upY), PdfPoint(end.x + upX, end.y + upY))
-                                        .map { coordinates.toDisplayedCropPoint(it) }
-                                }
-                            words += PdfTextWord(text, points.bounds())
+    ): List<PdfTextWord> = withContext(Dispatchers.IO) { PDDocument.load(source).use { extractText(it, pageIndex) } }
+
+    /** Blocking; [document] must be a read-only snapshot not shared with another thread. */
+    internal fun extractText(
+        document: PDDocument,
+        pageIndex: Int,
+    ): List<PdfTextWord> {
+        require(pageIndex in 0 until document.numberOfPages) { "Text page does not exist" }
+        val words = mutableListOf<PdfTextWord>()
+        val coordinates = PageCoordinates(document.getPage(pageIndex))
+        val stripper =
+            object : PDFTextStripper() {
+                override fun writeString(
+                    text: String,
+                    textPositions: MutableList<TextPosition>,
+                ) {
+                    if (text.isEmpty() || textPositions.isEmpty()) return
+                    val points =
+                        textPositions.flatMap { position ->
+                            // PDFBox's matrix/end point are already relative to the crop box.
+                            val matrix = position.textMatrix
+                            val start = PdfPoint(matrix.translateX, matrix.translateY)
+                            val end = PdfPoint(position.endX, position.endY)
+                            val length = hypot(end.x - start.x, end.y - start.y).coerceAtLeast(.001f)
+                            val upX = -(end.y - start.y) / length * position.heightDir
+                            val upY = (end.x - start.x) / length * position.heightDir
+                            listOf(start, end, PdfPoint(start.x + upX, start.y + upY), PdfPoint(end.x + upX, end.y + upY))
+                                .map { coordinates.toDisplayedCropPoint(it) }
                         }
+                    words += PdfTextWord(text, points.bounds())
+                }
 
-                        override fun writeWordSeparator() = appendSeparator(" ")
+                override fun writeWordSeparator() = appendSeparator(" ")
 
-                        override fun writeLineSeparator() = appendSeparator("\n")
+                override fun writeLineSeparator() = appendSeparator("\n")
 
-                        private fun appendSeparator(separator: String) {
-                            if (words.isNotEmpty()) words[words.lastIndex] = words.last().let { it.copy(text = it.text + separator) }
-                        }
-                    }
-                stripper.startPage = pageIndex + 1
-                stripper.endPage = pageIndex + 1
-                stripper.sortByPosition = true
-                stripper.getText(document)
-                words
+                private fun appendSeparator(separator: String) {
+                    if (words.isNotEmpty()) words[words.lastIndex] = words.last().let { it.copy(text = it.text + separator) }
+                }
             }
-        }
+        stripper.startPage = pageIndex + 1
+        stripper.endPage = pageIndex + 1
+        stripper.sortByPosition = true
+        stripper.getText(document)
+        return words
+    }
 
     private fun createAnnotation(
         document: PDDocument,

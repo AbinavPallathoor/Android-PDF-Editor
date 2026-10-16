@@ -15,9 +15,8 @@ import com.pdfeditor.app.data.cache.documentSessionDirectory
 import com.pdfeditor.app.data.fonts.FontRepository
 import com.pdfeditor.app.data.pdf.PdfBoxCompressor
 import com.pdfeditor.app.data.pdf.PdfBoxDocumentContent
-import com.pdfeditor.app.data.pdf.PdfBoxFillTargetDetector
+import com.pdfeditor.app.data.pdf.PdfFillTargetSource
 import com.pdfeditor.app.data.pdf.PdfRendererEngine
-import com.pdfeditor.app.data.pdf.withPdfReadCopy
 import com.pdfeditor.app.domain.Annotation
 import com.pdfeditor.app.domain.CompressionPreset
 import com.pdfeditor.app.domain.CompressionResult
@@ -36,6 +35,7 @@ import com.tom_roush.pdfbox.multipdf.PDFMergerUtility
 import com.tom_roush.pdfbox.pdmodel.PDDocument
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -132,7 +132,10 @@ class ReaderViewModel(
             ) = value.byteCount
         }
     private val textCache = object : LruCache<String, List<PdfTextWord>>(12) {}
-    private val fillCache = object : LruCache<String, List<PdfFillTarget>>(12) {}
+    private val fillCache = object : LruCache<String, List<PdfFillTarget>>(64) {}
+
+    // Shared read snapshot of the current base; replaced whenever the renderer base changes.
+    private var fillSource: PdfFillTargetSource? = null
 
     init {
         launchOperation {
@@ -254,6 +257,8 @@ class ReaderViewModel(
             OpenPdfResult.PasswordProtected -> error("Password-protected PDFs are not supported yet.")
             is OpenPdfResult.Failed -> error(result.message)
         }
+        fillSource?.let { old -> withContext(NonCancellable + Dispatchers.IO) { old.close() } }
+        fillSource = null
         cache.evictAll()
         textCache.evictAll()
         fillCache.evictAll()
@@ -324,14 +329,22 @@ class ReaderViewModel(
             }
         }
 
-    suspend fun fillTargets(pageIndex: Int): List<PdfFillTarget> =
-        operation.withLock {
-            val sourceIndex = edits?.current?.pages?.getOrNull(pageIndex)?.sourceIndex ?: return@withLock emptyList()
-            val key = "$version:$sourceIndex"
-            fillCache.get(key) ?: withPdfReadCopy(base!!, sessionDir) { copy ->
-                PdfBoxFillTargetDetector().detect(copy, sourceIndex).also { fillCache.put(key, it) }
+    suspend fun fillTargets(pageIndex: Int): List<PdfFillTarget> {
+        val (key, source, sourceIndex) =
+            operation.withLock {
+                val sourceIndex = edits?.current?.pages?.getOrNull(pageIndex)?.sourceIndex
+                if (sourceIndex == null || engine == null) return emptyList()
+                val key = "$version:$sourceIndex"
+                fillCache.get(key)?.let { return it }
+                // Only the one-time snapshot of the base needs the lock; it can't change meanwhile.
+                val source = fillSource ?: PdfFillTargetSource(sessionDir).also { fillSource = it }
+                source.snapshot(base!!)
+                Triple(key, source, sourceIndex)
             }
-        }
+        // Detection runs outside the reader lock so it never stalls rendering or edits. A result
+        // that raced a base change lands under the old version's key, which is never read again.
+        return source.detect(sourceIndex).also { fillCache.put(key, it) }
+    }
 
     private fun edit(action: (DocumentEdits) -> Unit) =
         launchOperation {
@@ -648,6 +661,8 @@ class ReaderViewModel(
         kotlinx.coroutines.CoroutineScope(Dispatchers.IO).launch {
             operation.withLock {
                 current?.close()
+                fillSource?.close()
+                fillSource = null
                 cache.evictAll()
             }
         }
