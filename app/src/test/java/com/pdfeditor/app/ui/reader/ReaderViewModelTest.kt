@@ -78,6 +78,36 @@ class ReaderViewModelTest {
     }
 
     @Test
+    fun `discard restores the last saved document durably without changing the original`() =
+        runTest {
+            val source = annotatedFixture()
+            val original = source.readBytes()
+            val vm = open(source)
+            val initial = ready(vm)
+            var state =
+                changed(vm, initial) {
+                    vm.addAnnotation(
+                        initial.pageIds[1],
+                        DrawStroke("unsaved", listOf(PdfPoint(20f, 30f), PdfPoint(50f, 70f)), -16777216, 2f),
+                    )
+                }
+            state = changed(vm, state) { vm.deletePages(setOf(0)) }
+            assertArrayEquals(original, source.readBytes())
+            state = changed(vm, state) { vm.discardChanges() }
+            assertEquals(initial.pageIds, state.pageIds)
+            assertEquals(initial.annotations, state.annotations)
+            assertFalse(state.dirty)
+            assertFalse(state.canUndo)
+            assertFalse(state.canRedo)
+            vm.flush()
+            val reopened = ready(open(source))
+            assertEquals(initial.annotations, reopened.annotations)
+            assertEquals(initial.pageIds, reopened.pageIds)
+            assertFalse(reopened.dirty)
+            assertArrayEquals(original, source.readBytes())
+        }
+
+    @Test
     fun `dirty draft recovers a lost custom font from the original pdf without losing edits`() =
         runTest {
             val repository = FontRepository(requireNotNull(workingCopies.parentFile))

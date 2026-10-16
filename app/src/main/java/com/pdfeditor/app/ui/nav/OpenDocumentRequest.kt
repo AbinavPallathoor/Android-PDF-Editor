@@ -53,7 +53,7 @@ internal fun persistReadPermission(
         try {
             resolver.takePersistableUriPermission(uri, modes)
         } catch (_: SecurityException) {
-            // Temporary access is enough for this session, but not for a reopenable Recent.
+            // Durable intake copies temporary handoffs before recording a reopenable Recent.
         }
     }
     return resolver.persistedUriPermissions.any { it.uri == uri && it.isReadPermission }

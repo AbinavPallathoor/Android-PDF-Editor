@@ -189,7 +189,7 @@ internal fun DocumentPageSurface(
                             if (resizeCorner == null && tool == EditorTool.HAND && allowAnnotationMove) {
                                 hitTestAnnotation(
                                     currentAnnotations.filter {
-                                        it is SignaturePlacement || it is TextBoxAnnotation
+                                        it is SignaturePlacement || it is TextBoxAnnotation || it is DrawStroke
                                     },
                                     PdfPoint(down.position.x / currentScale, down.position.y / currentScale),
                                 )
@@ -305,30 +305,24 @@ internal fun DocumentPageSurface(
                                         change.consume()
                                     }
                                     draggable != null -> {
-                                        val delta =
-                                            pdf(
-                                                pos,
-                                            ).let { PdfPoint(it.x - down.position.x / currentScale, it.y - down.position.y / currentScale) }
-                                        moving =
+                                        val delta = (pos - down.position) / currentScale
+                                        val translated =
                                             when (draggable) {
+                                                is DrawStroke ->
+                                                    draggable.copy(
+                                                        points = draggable.points.map { PdfPoint(it.x + delta.x, it.y + delta.y) },
+                                                    )
                                                 is SignaturePlacement ->
                                                     draggable.copy(
-                                                        position =
-                                                            PdfPoint(
-                                                                (draggable.position.x + delta.x).coerceAtLeast(0f),
-                                                                (draggable.position.y + delta.y).coerceAtLeast(0f),
-                                                            ),
+                                                        position = PdfPoint(draggable.position.x + delta.x, draggable.position.y + delta.y),
                                                     )
                                                 is TextBoxAnnotation ->
                                                     draggable.copy(
-                                                        position =
-                                                            PdfPoint(
-                                                                (draggable.position.x + delta.x).coerceAtLeast(0f),
-                                                                (draggable.position.y + delta.y).coerceAtLeast(0f),
-                                                            ),
+                                                        position = PdfPoint(draggable.position.x + delta.x, draggable.position.y + delta.y),
                                                     )
-                                                else -> null
+                                                else -> draggable
                                             }
+                                        moving = clampAnnotationToPage(translated, widthPoints, size.height / currentScale)
                                         change.consume()
                                     }
                                     selecting -> {

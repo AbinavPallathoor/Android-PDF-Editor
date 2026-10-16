@@ -7,7 +7,9 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.toPixelMap
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.captureToImage
 import androidx.compose.ui.test.getUnclippedBoundsInRoot
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
@@ -52,6 +54,16 @@ class DocumentTitleBarTest {
                     )
                 }
             }
+        }
+    }
+
+    @Test
+    fun headerRemainsSolidBlackOverAWhiteDocument() {
+        launch()
+        val pixels = compose.onNodeWithTag("document-header-background").captureToImage().toPixelMap()
+        for (fraction in listOf(.15f, .5f, .85f)) {
+            val pixel = pixels[(pixels.width * .98f).toInt(), (pixels.height * fraction).toInt()]
+            assertTrue("Header must stay black without a white fade", pixel.red < .02f && pixel.green < .02f && pixel.blue < .02f)
         }
     }
 

@@ -13,12 +13,12 @@ section supersedes the original gesture-only milestone design.
 
 The user replaced the original single-page writing-mode requirement with a shared,
 iPad-style multipage annotation surface. `ReaderScreen` now uses the same
-`DocumentPageSurface` in scrolling and paged layouts. The original gradient `DocumentTitleBar` and thumbnail expansion are reused.
+`DocumentPageSurface` in scrolling and paged layouts. `DocumentTitleBar` and its thumbnail expansion are reused.
 The reader is full-screen: at the start of the document the header stays visible
 and the PDF sits below its controls. Away from the start, chrome fades after
 idle and a Hand tap reveals it. The header uses a compact 64dp control area below the status/camera inset.
-Only the status/camera inset stays solid black; the gradient fades immediately
-below it across the compact controls and a 16dp tail.
+The status/camera inset and compact controls are solid black; there is no gradient
+or white paper backdrop behind the header.
 Header swipes follow the finger and settle with a damped spring. Neighbour
 thumbnails preload off the UI thread; navigation uses the exact previewed URI
 and flushes the draft. A temporary display frame bridges loading until the next
@@ -32,7 +32,8 @@ and follows the mostly visible page. Stored reading position still refers to the
 first visible page and its normalized offset.
 Chrome and panels use pure black. The pencil enables a compact monochrome editing tray; colours are requested
 from its palette button. Done returns to reading. Hand scrolls/selects text and,
-only during editing, drags app-created text/signatures. Two fingers navigate
+only during editing, drags app-created ink/text/signatures. Single-finger Hand
+drags pan both axes when zoomed; page tools and selection claim gestures first. Two fingers navigate
 in all tools. Pages, layout, and fit live in the expanded document panel. Long press selects PDF text, never the old scrub panel. Normal PDF
 colours are the default; optional inversion and layout persist per URI. The
 application chrome remains black.
@@ -68,8 +69,10 @@ and text reflow waits for import or an explicit replacement font. Typeface/style
 objects must stay stable during inline layout to avoid recomposition loops.
 The tray animates its content size; resizing tracks the finger without tween lag.
 
-The bottom-right save icon offers save-as-new (default) and explicit current-file
-replacement when writable. Save/share snapshot every page. Pending export JSON
+The bottom-right save icon offers save-as-new (default), explicit current-file
+replacement when writable, and Discard all changes. Discard restores the saved
+snapshot including page structure, clears both histories and persists that state.
+Private draft persistence never writes a PDF source; all objects remain editable. Save/share snapshot every page. Pending export JSON
 stays on disk; only paths enter saved-instance state. Replacement checks the
 original fingerprint, retains a unique backup and verifies output bytes. Dirty
 state clears only for the exact exported snapshot. External changes refresh
@@ -245,10 +248,13 @@ adding form-filling/encryption support later without a rewrite.
   the scaffold + PdfBox-Android dependency at **7.3MB**, well under the 15MB
   budget — re-check `assembleRelease` APK size whenever PdfBox-Android usage
   actually grows (real merge/compress/annotation code, Milestones 4-6).
-- Only add a document to Recents when `takePersistableUriPermission`
-  succeeds — some `content://` providers don't support persistable grants,
-  and a Recents row that can't be safely reopened next launch is worse than
-  no row.
+- Only add reopenable documents to Recents: persisted SAF grants, the app's own
+  FileProvider, or validated private imported copies. Temporary external handoffs
+  are copied into `filesDir/imported_documents/` using source/content hashes.
+  Repeated identical handoffs reuse their draft; changed sources keep a separate
+  identity. Legacy URI-keyed drafts migrate atomically to the imported URI with
+  their immutable base and preferences; old drafts and newer destination drafts
+  are retained. Never write back to the temporary external source.
 
 ## Build / run / test commands
 

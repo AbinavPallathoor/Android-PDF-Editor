@@ -136,6 +136,7 @@ fun ReaderScreen(
     onToggleLayout: () -> Unit,
     onRename: (String) -> Unit = {},
     onCompress: () -> Unit = {},
+    onDiscardChanges: () -> Unit = {},
     modifier: Modifier = Modifier,
     adjacentDocument: (Boolean) -> RecentDocument? = { null },
     onSwitchDocument: suspend (RecentDocument) -> Boolean = { false },
@@ -190,6 +191,7 @@ fun ReaderScreen(
                 onSwitchDocument,
                 onEditText,
                 onContentReady,
+                onDiscardChanges,
             )
     }
 }
@@ -220,6 +222,7 @@ private fun EditorDocument(
     onSwitchDocument: suspend (RecentDocument) -> Boolean,
     onEditText: (String, TextBoxAnnotation, String) -> Unit,
     onContentReady: () -> Unit,
+    onDiscardChanges: () -> Unit,
 ) {
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
@@ -453,8 +456,10 @@ private fun EditorDocument(
     }
     LaunchedEffect(currentPage, state.documentVersion) {
         selection = null
-        panX = 0f
-        panY = 0f
+        if (state.paged) {
+            panX = 0f
+            panY = 0f
+        }
     }
     LaunchedEffect(viewportWidth) {
         if (!restoredPosition && viewportWidth > 1f) {
@@ -487,6 +492,8 @@ private fun EditorDocument(
         }
     }
     LaunchedEffect(state.documentVersion) {
+        panX = 0f
+        panY = 0f
         titleThumbnail = renderPage(0, 640, (640 * state.pageAspectRatios[0]).roundToInt().coerceAtLeast(1))
     }
     LaunchedEffect(chromeVisible, chromeTick) {
@@ -577,11 +584,6 @@ private fun EditorDocument(
     })
     val finishTextNow by rememberUpdatedState(::finishText)
     Box(modifier.fillMaxSize().background(Color.Black).imePadding()) {
-        // Extend the page's blank margin behind the fading header at the document start.
-        // Its text still begins below the controls, without a solid black band hiding the fade.
-        if (pinnedHeader) {
-            Box(Modifier.fillMaxWidth().height(headerInset + 16.dp).background(if (state.invertColors) Color.Black else Color.White))
-        }
         Box(
             Modifier.fillMaxSize().padding(top = headerInset).clipToBounds().testTag("document-surface")
                 .onSizeChanged {
@@ -590,7 +592,10 @@ private fun EditorDocument(
                 }
                 .pointerInput(Unit) {
                     awaitEachGesture {
-                        awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+                        val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+                        var lastPosition = down.position
+                        var singlePanning = false
+                        var childOwnsGesture = false
                         var hadMultiple = false
                         var multiPanX = 0f
                         var multiZoom = 1f
@@ -609,6 +614,23 @@ private fun EditorDocument(
                                 multiZoom *= factor
                                 updateZoom(factor, pan)
                                 event.changes.forEach { it.consume() }
+                            } else if (!hadMultiple) {
+                                // Page tools and PDF text selection claim the Initial pass.
+                                // Read their decision on Main before taking an unclaimed Hand drag.
+                                val mainEvent = awaitPointerEvent(PointerEventPass.Main)
+                                val change = mainEvent.changes.firstOrNull { it.id == down.id }
+                                if (change != null) {
+                                    if (!singlePanning && change.isConsumed) childOwnsGesture = true
+                                    val displacement = change.position - down.position
+                                    if (tool == EditorTool.HAND && zoom > 1.01f && !childOwnsGesture &&
+                                        (singlePanning || displacement.getDistance() > viewConfiguration.touchSlop)
+                                    ) {
+                                        updateZoom(1f, change.position - lastPosition)
+                                        singlePanning = true
+                                        change.consume()
+                                    }
+                                    lastPosition = change.position
+                                }
                             }
                         } while (event.changes.any { it.pressed })
                         if (isPaged && zoom <= 1.01f && kotlin.math.abs(multiZoom - 1f) < .1f && kotlin.math.abs(multiPanX) > 60f) {
@@ -777,6 +799,9 @@ private fun EditorDocument(
                 LazyColumn(
                     state = list,
                     modifier = Modifier.fillMaxSize().testTag("scroll-document"),
+                    // A zoomed Hand drag is owned above, including both axes. Keeping the
+                    // native scroller active would cancel that pointer stream after touch slop.
+                    userScrollEnabled = tool != EditorTool.HAND || zoom <= 1.01f,
                     contentPadding = PaddingValues(top = 12.dp, bottom = editingBottom + floatingSaveSpace + 12.dp),
                     verticalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
@@ -820,6 +845,22 @@ private fun EditorDocument(
                             finishText()
                             onSave(false)
                         }, modifier = Modifier.testTag("save-current"))
+                        DropdownMenuItem(text = { Text("Discard all changes") }, onClick = {
+                            saveMenu = false
+                            finishText()
+                            selectedObject = null
+                            selection = null
+                            onDiscardChanges()
+                        }, modifier = Modifier.testTag("discard-changes"))
+                        Text(
+                            if (state.importedCopy) {
+                                "Imported copy. The file in the other app stays unchanged."
+                            } else {
+                                "Unsaved edits stay in a private draft."
+                            },
+                            Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                            style = MaterialTheme.typography.bodySmall,
+                        )
                         if (!state.canSaveOriginal) {
                             Text(
                                 "Opened with read-only access",

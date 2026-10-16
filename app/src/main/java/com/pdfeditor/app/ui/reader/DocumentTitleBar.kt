@@ -21,7 +21,6 @@ import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.displayCutout
@@ -71,7 +70,6 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.PathOperation
@@ -107,10 +105,9 @@ import kotlin.math.roundToInt
 import kotlin.math.sin
 
 private const val THUMB_TARGET_WIDTH_DP = 260
-private const val GRADIENT_EXTRA_FADE_DP = 16
 
 /**
- * Camera-safe header with a fade that begins immediately below the system inset. Tapping its
+ * Compact, camera-safe solid black header. Tapping its
  * identity morphs the thumbnail into a larger preview above the bottom action deck; the filename
  * edits inline. Horizontal swipes on the collapsed identity switch recent documents in place.
  * Gesture arbitration stays in one event reader in HeaderDocumentSwitcher.
@@ -348,18 +345,7 @@ private fun CollapsedBar(
     onHeaderHeightChanged: (Int) -> Unit,
     onSwipeActive: (Boolean) -> Unit,
 ) {
-    val density = LocalDensity.current
-    val cameraInset = WindowInsets.statusBarsIgnoringVisibility.union(WindowInsets.displayCutout)
-    val fadeStart = cameraInset.getTop(density).toFloat()
-    Box(
-        Modifier.fillMaxWidth().background(
-            Brush.verticalGradient(
-                colors = listOf(Color.Black, Color.Transparent),
-                startY = fadeStart,
-                endY = fadeStart + with(density) { (64 + GRADIENT_EXTRA_FADE_DP).dp.toPx() },
-            ),
-        ),
-    ) {
+    Box(Modifier.fillMaxWidth().testTag("document-header-background").background(Color.Black)) {
         Column(modifier = Modifier.fillMaxWidth()) {
             Row(
                 verticalAlignment = Alignment.CenterVertically,
@@ -393,7 +379,6 @@ private fun CollapsedBar(
                 )
                 InvertToggleButton(invertColors = invertColors, onClick = onToggleInvert)
             }
-            Spacer(Modifier.fillMaxWidth().height(GRADIENT_EXTRA_FADE_DP.dp))
         }
     }
 }

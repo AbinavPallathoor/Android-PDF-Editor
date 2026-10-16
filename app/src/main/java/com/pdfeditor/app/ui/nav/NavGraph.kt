@@ -44,6 +44,7 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.toRoute
+import com.pdfeditor.app.data.cache.migrateImportedDraft
 import com.pdfeditor.app.data.resolveDocumentMetadata
 import com.pdfeditor.app.domain.RecentsRepository
 import com.pdfeditor.app.ui.home.HomeScreen
@@ -69,6 +70,8 @@ fun PdfEditorNavGraph(
     openRequests: Flow<OpenDocumentRequest> = emptyFlow(),
 ) {
     val nav = rememberNavController()
+    val context = LocalContext.current
+    val importsDirectory = remember(context) { File(context.filesDir, "imported_documents") }
     val home: HomeViewModel = viewModel(factory = HomeViewModel.Factory(recentsRepository))
     val scope = rememberCoroutineScope()
     var beforeLeave by remember { mutableStateOf<suspend () -> Unit>({}) }
@@ -91,13 +94,25 @@ fun PdfEditorNavGraph(
         try {
             if (documentSwitch?.uri != uri.toString()) documentSwitch = null
             beforeLeave()
-            val metadata = withContext(Dispatchers.IO) { resolveDocumentMetadata(contentResolver, uri) }
-            val durable = contentResolver.persistedUriPermissions.any { it.uri == uri && it.isReadPermission }
-            val doc = existingRecent ?: if (durable) home.recordOpened(uri.toString(), metadata.displayName, metadata.sizeBytes) else null
-            val id = doc?.id ?: -uri.toString().hashCode().toLong().let { if (it == 0L) 1 else kotlin.math.abs(it) }
+            val opened =
+                withContext(Dispatchers.IO) {
+                    prepareDurableDocument(contentResolver, uri, importsDirectory, "${context.packageName}.fileprovider").also { opened ->
+                        if (opened.uri != uri && isImportedDocumentUri(opened.uri, importsDirectory)) {
+                            migrateImportedDraft(uri, opened.uri, File(context.filesDir, "working_copies"))
+                        }
+                    }
+                }
+            val metadata = opened.metadata
+            val previous = existingRecent ?: recentsRepository.getByUri(opened.uri.toString())
+            val doc =
+                existingRecent ?: home.recordOpened(
+                    opened.uri.toString(),
+                    previous?.displayName ?: metadata.displayName,
+                    metadata.sizeBytes ?: previous?.fileSizeBytes,
+                )
             withContext(Dispatchers.Main.immediate) {
                 nav.navigate(
-                    ReaderRoute.forDocument(id, uri, doc?.displayName ?: metadata.displayName),
+                    ReaderRoute.forDocument(doc.id, opened.uri, doc.displayName),
                 ) { popUpTo<HomeRoute> { inclusive = false } }
             }
             return true
@@ -313,6 +328,7 @@ fun PdfEditorNavGraph(
                         }
                     },
                     onSave = ::save,
+                    onDiscardChanges = { model.discardChanges() },
                     onAddAnnotation = model::addAnnotation,
                     onEditText = model::editText,
                     onReplaceAnnotation = model::replaceAnnotation,

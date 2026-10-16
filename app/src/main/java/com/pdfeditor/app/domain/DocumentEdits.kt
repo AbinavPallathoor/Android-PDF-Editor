@@ -144,6 +144,14 @@ class DocumentEdits(initial: DocumentSnapshot, saved: DocumentSnapshot = initial
         savedSnapshot = snapshot.detached()
     }
 
+    /** An explicit revert is final: undo/redo cannot silently bring discarded objects back. */
+    fun discardChanges() {
+        current = savedSnapshot.detached()
+        undoHistory.clear()
+        redoHistory.clear()
+        lastHistoryGroup = null
+    }
+
     private fun requirePage(pageId: String) {
         require(current.pages.any { it.id == pageId }) { "Page does not exist" }
     }

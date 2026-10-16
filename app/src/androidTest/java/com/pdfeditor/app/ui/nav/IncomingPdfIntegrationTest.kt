@@ -41,6 +41,7 @@ import com.tom_roush.pdfbox.pdmodel.PDPageContentStream
 import com.tom_roush.pdfbox.pdmodel.common.PDRectangle
 import com.tom_roush.pdfbox.pdmodel.font.PDType1Font
 import com.tom_roush.pdfbox.text.PDFTextStripper
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -73,10 +74,17 @@ class IncomingPdfIntegrationTest {
             coldActivity?.takeUnless { it.isFinishing || it.isDestroyed }?.finishAndRemoveTask()
         }
         instrumentation.waitForIdleSync()
-        fixtures.forEach { it.delete() }
         runBlocking {
-            fixtureRecents.forEach { (context.applicationContext as PdfEditorApplication).recentsRepository.remove(it) }
+            val repository = (context.applicationContext as PdfEditorApplication).recentsRepository
+            val workingRoot = File(context.filesDir, "working_copies").canonicalPath + File.separator
+            val fixtureUris =
+                fixtures.filter { it.canonicalPath.startsWith(workingRoot) }.map { file ->
+                    FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file).toString()
+                }.toSet()
+            val automaticallyRecorded = repository.observeRecents().first().filter { it.uri in fixtureUris }.map { it.id }
+            (fixtureRecents + automaticallyRecorded).distinct().forEach { repository.remove(it) }
         }
+        fixtures.forEach { it.delete() }
         if (restoreSignatures) {
             val store = File(context.filesDir, "signatures.json")
             originalSignatures?.let { store.writeBytes(it) } ?: store.delete()
@@ -119,8 +127,7 @@ class IncomingPdfIntegrationTest {
         val target = createPdf("swipe-target", pageCount = 5)
         val repository = (context.applicationContext as PdfEditorApplication).recentsRepository
         runBlocking {
-            // Seed owned test URIs so the real reader has adjacent documents. Production
-            // still records only documents with durable grants; no provider is mocked.
+            // Seed both owned URIs before launch so the reader has adjacent documents.
             listOf(target, source).forEach { pdf ->
                 fixtureRecents.add(repository.recordOpened(pdf.uri.toString(), pdf.name, null).id)
             }

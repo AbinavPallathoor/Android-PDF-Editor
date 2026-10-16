@@ -11,6 +11,7 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.pdfeditor.app.data.cache.DocumentDraft
 import com.pdfeditor.app.data.cache.DocumentDraftStore
+import com.pdfeditor.app.data.cache.documentSessionDirectory
 import com.pdfeditor.app.data.fonts.FontRepository
 import com.pdfeditor.app.data.pdf.PdfBoxCompressor
 import com.pdfeditor.app.data.pdf.PdfBoxDocumentContent
@@ -27,6 +28,7 @@ import com.pdfeditor.app.domain.PdfDocumentRenderer
 import com.pdfeditor.app.domain.PdfTextWord
 import com.pdfeditor.app.domain.RecentsRepository
 import com.pdfeditor.app.domain.TextBoxAnnotation
+import com.pdfeditor.app.ui.nav.isImportedDocumentUri
 import com.tom_roush.pdfbox.multipdf.PDFMergerUtility
 import com.tom_roush.pdfbox.pdmodel.PDDocument
 import kotlinx.coroutines.Dispatchers
@@ -68,6 +70,7 @@ sealed interface ReaderUiState {
         val canSaveOriginal: Boolean = false,
         val message: String? = null,
         val initialScrollFraction: Float = 0f,
+        val importedCopy: Boolean = false,
     ) : ReaderUiState
 
     data object PasswordProtected : ReaderUiState
@@ -100,11 +103,7 @@ class ReaderViewModel(
     private val operation = Mutex()
     private val fonts = FontRepository(requireNotNull(workingCopiesDir.parentFile))
     private val content = PdfBoxDocumentContent(fonts)
-    private val sessionDir =
-        File(
-            workingCopiesDir,
-            MessageDigest.getInstance("SHA-256").digest(uri.toString().toByteArray()).joinToString("") { "%02x".format(it) },
-        )
+    private val sessionDir = documentSessionDirectory(workingCopiesDir, uri)
     private val drafts = DocumentDraftStore(File(sessionDir, "draft.json"))
     private var edits: DocumentEdits? = null
     private var base: File? = null
@@ -121,6 +120,7 @@ class ReaderViewModel(
     private var writable = false
     private var sourceFingerprint: String? = null
     private var sourceWarning: String? = null
+    private var importedCopy = false
     private val cache =
         object : LruCache<String, Bitmap>(cacheBudgetBytes) {
             override fun sizeOf(
@@ -132,7 +132,10 @@ class ReaderViewModel(
 
     init {
         launchOperation {
-            withContext(Dispatchers.IO) { sessionDir.mkdirs() }
+            withContext(Dispatchers.IO) {
+                sessionDir.mkdirs()
+                importedCopy = isImportedDocumentUri(uri, File(workingCopiesDir.parentFile, "imported_documents"))
+            }
             preferences =
                 withContext(Dispatchers.IO) {
                     File(sessionDir, "preferences.json").takeIf {
@@ -164,7 +167,11 @@ class ReaderViewModel(
                             "The original PDF changed outside this app. Your draft is recovered; save a copy to preserve both."
                         else -> null
                     }
-                message = sourceWarning
+                message = sourceWarning ?: if (recoveredEdits?.isDirty == true) {
+                    "Unsaved draft restored. The PDF has not been changed."
+                } else {
+                    null
+                }
             } else {
                 val incoming = File(sessionDir, "import-${UUID.randomUUID()}.pdf")
                 withContext(Dispatchers.IO) {
@@ -261,6 +268,7 @@ class ReaderViewModel(
                 pageIds = doc.current.pages.map { it.id }, annotations = doc.current.pages.indices.associateWith { doc.annotationsAt(it) },
                 dirty = doc.isDirty, canUndo = doc.canUndo, canRedo = doc.canRedo, paged = preferences.paged,
                 saving = saving, canSaveOriginal = writable, message = message, initialScrollFraction = scrollFraction,
+                importedCopy = importedCopy,
             )
     }
 
@@ -342,6 +350,8 @@ class ReaderViewModel(
         pageId: String,
         id: String,
     ) = edit { it.remove(pageId, id) }
+
+    fun discardChanges() = edit { it.discardChanges() }
 
     fun undo() = edit { it.undo() }
 

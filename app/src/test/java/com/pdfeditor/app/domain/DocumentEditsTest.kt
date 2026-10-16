@@ -11,6 +11,27 @@ class DocumentEditsTest {
 
     private fun document() = DocumentEdits(DocumentSnapshot(listOf(DocumentPage("p0", 0), DocumentPage("p1", 1), DocumentPage("p2", 2))))
 
+    @Test fun `discard restores the saved pages and objects and clears both histories`() {
+        val doc = document()
+        doc.add("p0", a)
+        doc.markSaved(doc.current)
+        val saved = doc.current
+        doc.replace("p0", a.copy(points = listOf(PdfPoint(60f, 70f), PdfPoint(80f, 90f))))
+        doc.append(listOf(DocumentPage("added", 3)))
+        doc.reorder(listOf(3, 2, 1, 0))
+        doc.undo()
+        assertTrue(doc.canUndo)
+        assertTrue(doc.canRedo)
+        doc.discardChanges()
+        assertEquals(saved, doc.current)
+        assertFalse(doc.isDirty)
+        assertFalse(doc.canUndo)
+        assertFalse(doc.canRedo)
+        doc.undo()
+        doc.redo()
+        assertEquals(saved, doc.current)
+    }
+
     @Test fun `live text is recoverable after every keystroke and undoes as one edit`() {
         val doc = document()
         val text = TextBoxAnnotation("text", PdfPoint(20f, 40f), "H", 14f, -16777216)

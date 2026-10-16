@@ -2,12 +2,13 @@
 
 A minimal, fully offline Android PDF reader and annotation editor. Read the whole
 PDF, then reveal tools only when you need them. Pure-black controls, an unobtrusive
-gradient header, and normal PDF colours keep the document at the centre.
+compact black header, and normal PDF colours keep the document at the centre.
 
 [Download the latest APK](https://github.com/AbinavPallathoor/Android-PDF-Editor/releases/latest)
 
 - Annotate any page with pen strokes, highlights, text, and reusable signatures.
 - Type directly on the page; resize selected text boxes with corner handles.
+- Use Hand while editing to select and move drawings, signatures, and text.
 - Change text colour and fonts from the contextual tray. Sans, Serif, and Mono are included; import additional static TrueType fonts locally.
 - Switch between scrolling and page-by-page views, zoom/pan, and copy PDF text.
 - Swipe the document title to move between recent PDFs, with drafts kept intact.
@@ -15,7 +16,9 @@ gradient header, and normal PDF colours keep the document at the centre.
 - Drag the curved edge scrollbar to browse pages; its page number appears above the handle.
 - Open a bottom panel for page/view and file controls; rename directly in its title.
 - Reorder or delete pages, or add an entire PDF or selected pages, with document-wide undo/redo and draft recovery.
-- Save from the bottom-right corner: create a new file or explicitly replace a writable original.
+- Save from the bottom-right corner: create a new file, explicitly replace a writable original, or discard all changes.
+- Unsaved work remains editable in a private draft. Closing or switching PDFs never writes to the original.
+- PDFs handed off with temporary access are kept as imported copies in Recents; their external originals stay unchanged.
 - Share the complete annotated PDF while retaining its original text and vectors.
 
 PDF colour inversion and layout are remembered per document. The app has no
@@ -25,7 +28,7 @@ It is Apache-2.0 licensed; dependency and font licenses are in
 
 ## Screenshots
 
-Screenshots show a synthetic sample document; no personal files are included.
+Screenshots show a synthetic sample document; no personal files are included. The gallery was captured for v0.2.2; the current header is solid black.
 
 | Reading | Inline text |
 | --- | --- |
@@ -53,7 +56,8 @@ On this machine set `JAVA_HOME=/opt/homebrew/opt/openjdk@21` before Gradle.
 Tests cover document-wide history, page identity, draft recovery, editable PDF
 round-trips, source conflicts, incoming file intents, real multipage editing and
 saving, text selection, layouts, pinch cancellation, and rotated/cropped pages.
-See the [document controls validation](docs/validation/2026-10-16-document-controls.md),
+See the [v0.2.3 validation](docs/validation/2026-10-16-v023.md),
+[document controls validation](docs/validation/2026-10-16-document-controls.md),
 [v0.2.1 validation](docs/validation/2026-10-16-v021.md),
 [v0.2.0 validation](docs/validation/2026-10-16-v020.md) and
 [PDF validation record](docs/validation/2026-10-15-multipage-editor.md) for test

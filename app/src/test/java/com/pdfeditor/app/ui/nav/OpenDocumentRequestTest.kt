@@ -41,7 +41,7 @@ class OpenDocumentRequestTest {
     }
 
     @Test
-    fun `temporary view request opens without becoming a recent document`() {
+    fun `temporary view request retains its nonpersistent grant for durable intake`() {
         val intent =
             Intent(Intent.ACTION_VIEW).setDataAndType(uri, "application/pdf")
                 .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)

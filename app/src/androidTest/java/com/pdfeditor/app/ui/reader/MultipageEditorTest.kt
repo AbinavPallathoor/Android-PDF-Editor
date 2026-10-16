@@ -98,6 +98,10 @@ class MultipageEditorTest {
                         ui = ready()
                     }, {},
                     { ui = ui.copy(invertColors = !ui.invertColors) }, { ui = ui.copy(paged = !ui.paged) },
+                    onDiscardChanges = {
+                        doc.discardChanges()
+                        ui = ready()
+                    },
                     onEditText = { pageId, annotation, session ->
                         doc.editText(pageId, annotation, session)
                         ui = ready().copy(paged = ui.paged, invertColors = ui.invertColors)
@@ -129,6 +133,20 @@ class MultipageEditorTest {
             }
         }
         compose.onNodeWithTag("document-details").performClick()
+    }
+
+    @Test
+    fun discardFromSaveMenuRemovesObjectsAndSaveIcon() {
+        val annotation = TextBoxAnnotation("discard-me", PdfPoint(80f, 180f), "Unsaved", 18f, -16777216)
+        doc.add("p0", annotation)
+        ui = ready()
+        launch()
+        compose.onNodeWithTag("save-edits").performClick()
+        compose.onNodeWithTag("discard-changes").performClick()
+        compose.waitForIdle()
+        compose.onNodeWithTag("save-edits").assertDoesNotExist()
+        assertTrue(doc.current.annotations.isEmpty())
+        assertTrue(!doc.isDirty && !doc.canUndo && !doc.canRedo)
     }
 
     @Test
@@ -383,17 +401,15 @@ class MultipageEditorTest {
     }
 
     @Test
-    fun headerFadeHasNoHardSeamAtTheTopOfThePaper() {
+    fun solidBlackHeaderEndsAboveNormalWhitePaper() {
         launch()
         val page = compose.onNodeWithTag("pdf-page-0").getUnclippedBoundsInRoot()
         val pixels = compose.onRoot().captureToImage().toPixelMap()
         val edge = with(compose.density) { page.top.roundToPx() }
-        val x = pixels.width / 2
-        val largestStep =
-            ((edge - 3)..(edge + 3)).maxOf { y ->
-                kotlin.math.abs(pixels[x, y].red - pixels[x, y - 1].red)
-            }
-        assertTrue("The header fade must blend continuously into the paper, without a dark/white step", largestStep < .12f)
+        val abovePaper = pixels[5, edge - 5]
+        val paper = pixels[pixels.width / 2, edge + 5]
+        assertTrue("The header must end in black without fading into white", abovePaper.red < .02f)
+        assertTrue("Normal PDF paper remains white below the black header", paper.red > .98f)
     }
 
     @Test
@@ -517,6 +533,143 @@ class MultipageEditorTest {
             up()
         }
         compose.onNodeWithTag("copy-selection").assertIsDisplayed()
+    }
+
+    @Test
+    fun handMovesAnInkStrokeWithOneUndoStep() {
+        val stroke = com.pdfeditor.app.domain.DrawStroke("ink", listOf(PdfPoint(50f, 180f), PdfPoint(180f, 220f)), -16777216, 2.5f)
+        doc.add("p0", stroke)
+        ui = ready()
+        launch()
+        enterEditing()
+        compose.onNodeWithTag("tool-HAND").performClick()
+        compose.onNodeWithTag("pdf-page-0").performTouchInput {
+            val scale = width / 612f
+            down(Offset(115f * scale, 200f * scale))
+            moveTo(Offset(145f * scale, 220f * scale), 80)
+            moveTo(Offset(175f * scale, 240f * scale), 80)
+            up()
+        }
+        val expected = stroke.copy(points = stroke.points.map { PdfPoint(it.x + 60f, it.y + 40f) })
+        val moved = doc.annotationsAt(0).single() as com.pdfeditor.app.domain.DrawStroke
+        compose.runOnIdle {
+            expected.points.zip(moved.points).forEach { (a, b) ->
+                assertEquals(a.x, b.x, .01f)
+                assertEquals(a.y, b.y, .01f)
+            }
+        }
+        compose.onNodeWithTag("object-selection-ink").assertIsDisplayed()
+        compose.onNodeWithTag("undo").performClick()
+        compose.runOnIdle { assertEquals(stroke, doc.annotationsAt(0).single()) }
+        compose.onNodeWithTag("redo").performClick()
+        compose.runOnIdle { assertEquals(moved, doc.annotationsAt(0).single()) }
+    }
+
+    @Test
+    fun secondFingerCancelsAnInkMoveAndNavigatesInstead() {
+        val stroke = com.pdfeditor.app.domain.DrawStroke("ink", listOf(PdfPoint(50f, 180f), PdfPoint(180f, 220f)), -16777216, 2.5f)
+        doc.add("p0", stroke)
+        ui = ready()
+        launch()
+        enterEditing()
+        compose.onNodeWithTag("tool-HAND").performClick()
+        compose.onNodeWithTag("pdf-page-0").performTouchInput {
+            val scale = width / 612f
+            down(0, Offset(115f * scale, 200f * scale))
+            moveTo(0, Offset(145f * scale, 220f * scale), 80)
+            down(1, Offset(240f * scale, 280f * scale))
+            moveTo(1, Offset(280f * scale, 320f * scale), 80)
+            up(0)
+            up(1)
+        }
+        compose.runOnIdle { assertEquals(stroke, doc.annotationsAt(0).single()) }
+        compose.onNodeWithTag("zoom-label").assertIsDisplayed()
+    }
+
+    @Test
+    fun cancelledInkMoveDoesNotCommitAPartialTranslation() {
+        val stroke = com.pdfeditor.app.domain.DrawStroke("ink", listOf(PdfPoint(50f, 180f), PdfPoint(180f, 220f)), -16777216, 2.5f)
+        doc.add("p0", stroke)
+        ui = ready()
+        launch()
+        enterEditing()
+        compose.onNodeWithTag("tool-HAND").performClick()
+        compose.onNodeWithTag("pdf-page-0").performTouchInput {
+            val scale = width / 612f
+            down(Offset(115f * scale, 200f * scale))
+            moveTo(Offset(145f * scale, 220f * scale), 80)
+            cancel()
+        }
+        compose.runOnIdle { assertEquals(stroke, doc.annotationsAt(0).single()) }
+    }
+
+    @Test
+    fun zoomedPagedReadingPansWithOneFingerInBothDirections() {
+        ui = ready().copy(paged = true, initialZoom = 2f)
+        launch()
+        val before = compose.onNodeWithTag("pdf-page-0").getUnclippedBoundsInRoot()
+        compose.onNodeWithTag("document-surface").performTouchInput {
+            down(center)
+            moveTo(center + Offset(-100f, -120f), 200)
+            up()
+        }
+        val after = compose.onNodeWithTag("pdf-page-0").getUnclippedBoundsInRoot()
+        assertTrue("One finger must pan the zoomed page horizontally", after.left < before.left - 20.dp)
+        assertTrue("One finger must pan the zoomed page vertically", after.top < before.top - 20.dp)
+    }
+
+    @Test
+    fun zoomedScrollingKeepsItsHorizontalPanAcrossPageBoundaries() {
+        ui = ready().copy(initialZoom = 2f)
+        launch()
+        val initial = compose.onNodeWithTag("pdf-page-0").getUnclippedBoundsInRoot()
+        compose.onNodeWithTag("document-surface").performTouchInput {
+            down(center)
+            moveTo(center + Offset(-100f, 0f), 200)
+            up()
+        }
+        val panned = compose.onNodeWithTag("pdf-page-0").getUnclippedBoundsInRoot()
+        assertTrue("Establish a horizontal pan before crossing pages", panned.left < initial.left - 20.dp)
+        repeat(4) {
+            compose.onNodeWithTag("document-surface").performTouchInput {
+                val start = Offset(width * .5f, height * .85f)
+                down(start)
+                moveTo(start - Offset(0f, height * .6f), 240)
+                up()
+            }
+        }
+        val next = compose.onNodeWithTag("pdf-page-1").getUnclippedBoundsInRoot()
+        val viewport = compose.onNodeWithTag("document-surface").getUnclippedBoundsInRoot()
+        assertTrue("Vertical drags must cross into the second page", next.top < (viewport.top + viewport.bottom) / 2)
+        assertEquals("Scrolling to another page must retain the horizontal position", panned.left.value, next.left.value, .5f)
+    }
+
+    @Test
+    fun zoomedReadingStillAllowsLongPressTextSelection() {
+        ui = ready().copy(paged = true, initialZoom = 2f)
+        launch()
+        compose.onNodeWithTag("document-surface").performTouchInput {
+            down(center)
+            advanceEventTime(800)
+            moveTo(center + Offset(.7f, .7f), 10)
+            up()
+        }
+        compose.onNodeWithTag("copy-selection").assertIsDisplayed()
+    }
+
+    @Test
+    fun zoomedScrollingReadingPansHorizontallyAndKeepsVerticalScrolling() {
+        ui = ready().copy(initialZoom = 2f)
+        launch()
+        val before = compose.onNodeWithTag("pdf-page-0").getUnclippedBoundsInRoot()
+        compose.onNodeWithTag("document-surface").performTouchInput {
+            down(center)
+            moveTo(center + Offset(-100f, -120f), 200)
+            up()
+        }
+        val after = compose.onNodeWithTag("pdf-page-0").getUnclippedBoundsInRoot()
+        assertTrue("One finger must pan horizontally in scrolling layout", after.left < before.left - 20.dp)
+        assertTrue("One finger must still navigate vertically", after.top < before.top - 20.dp)
     }
 
     @Test
