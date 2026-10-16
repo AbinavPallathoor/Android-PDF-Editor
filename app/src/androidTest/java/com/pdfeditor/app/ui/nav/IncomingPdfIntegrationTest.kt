@@ -23,6 +23,8 @@ import androidx.compose.ui.test.performScrollToIndex
 import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.performTouchInput
 import androidx.core.content.FileProvider
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
 import androidx.test.platform.app.InstrumentationRegistry
 import androidx.test.runner.lifecycle.ActivityLifecycleMonitorRegistry
 import androidx.test.runner.lifecycle.Stage
@@ -79,6 +81,36 @@ class IncomingPdfIntegrationTest {
             val store = File(context.filesDir, "signatures.json")
             originalSignatures?.let { store.writeBytes(it) } ?: store.delete()
         }
+    }
+
+    @Test
+    fun inlineRenameStaysInACompactRowAboveTheNativeKeyboard() {
+        val pdf = createPdf("rename-keyboard", pageCount = 3)
+        launchCold(pdf.uri)
+        awaitPdf(pdf.name, pageCount = 3)
+        composeRule.onNodeWithTag("document-details").performClick()
+        composeRule.onNodeWithTag("expanded-document-name").performClick()
+        val activity = checkNotNull(resumedActivity())
+        composeRule.waitUntil(timeoutMillis = 15_000) {
+            var shown = false
+            instrumentation.runOnMainSync {
+                shown = ViewCompat.getRootWindowInsets(activity.window.decorView)?.isVisible(WindowInsetsCompat.Type.ime()) == true
+            }
+            shown
+        }
+        composeRule.waitForIdle()
+        val field = composeRule.onNodeWithTag("inline-document-name").fetchSemanticsNode().boundsInWindow
+        var keyboardTop = 0
+        var density = 1f
+        instrumentation.runOnMainSync {
+            val view = activity.window.decorView
+            keyboardTop = view.height - ViewCompat.getRootWindowInsets(view)!!.getInsets(WindowInsetsCompat.Type.ime()).bottom
+            density = view.resources.displayMetrics.density
+        }
+        assertTrue("The rename field must stay visible above the keyboard", field.bottom <= keyboardTop + 2)
+        assertTrue("Renaming must not leave a large empty panel above the keyboard", keyboardTop - field.bottom < 96 * density)
+        composeRule.onNodeWithTag("inline-document-name").performImeAction()
+        composeRule.onNodeWithTag("pages").assertIsDisplayed()
     }
 
     @Test

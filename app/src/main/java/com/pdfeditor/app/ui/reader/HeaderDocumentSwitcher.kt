@@ -37,6 +37,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.key.Key
@@ -64,7 +65,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.toSize
 import com.pdfeditor.app.data.pdf.loadFirstPageThumbnail
 import com.pdfeditor.app.domain.RecentDocument
-import com.pdfeditor.app.ui.theme.OnSurfaceSecondary
 import kotlinx.coroutines.launch
 import kotlin.math.abs
 
@@ -282,12 +282,18 @@ private fun HeaderDocumentIdentity(
             }
         }
         Column(Modifier.weight(1f).padding(start = 12.dp)) {
-            Text(name, color = Color.White, style = MaterialTheme.typography.titleSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(
+                name,
+                color = Color.White,
+                style = MaterialTheme.typography.titleSmall.copy(shadow = Shadow(Color.Black, blurRadius = 4f)),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
             Text(
                 subtitle,
                 Modifier.testTag("page-count"),
-                color = OnSurfaceSecondary,
-                style = MaterialTheme.typography.bodySmall,
+                color = Color.White.copy(alpha = .85f),
+                style = MaterialTheme.typography.bodySmall.copy(shadow = Shadow(Color.Black, blurRadius = 4f)),
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )

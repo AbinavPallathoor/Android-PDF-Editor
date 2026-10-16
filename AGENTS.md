@@ -17,13 +17,19 @@ iPad-style multipage annotation surface. `ReaderScreen` now uses the same
 The reader is full-screen: at the start of the document the header stays visible
 and the PDF sits below its controls. Away from the start, chrome fades after
 idle and a Hand tap reveals it. The header uses a compact 64dp control area below the status/camera inset.
-Header controls stay on black; a separate 48dp fade below them holds black for
-its first quarter, then fades linearly to transparent.
+Only the status/camera inset stays solid black; the gradient fades immediately
+below it across the compact controls and a 16dp tail.
 Header swipes follow the finger and settle with a damped spring. Neighbour
 thumbnails preload off the UI thread; navigation uses the exact previewed URI
 and flushes the draft. A temporary display frame bridges loading until the next
 document's first page renders, then fades out. It never changes PDF content.
-Document options have separate, equally divided page and file action groups.
+Document options morph to a larger preview above a bottom-anchored black icon
+deck. Page/view and file actions have separate rows. Tap the filename to rename
+inline; Done confirms, Back or dismissal discards unfinished text. Pages enters
+with a fade/slide/scale transition. A curved right-edge handle replaces the
+bottom page counter during scrolling; its label sits above the draggable thumb
+and follows the mostly visible page. Stored reading position still refers to the
+first visible page and its normalized offset.
 Chrome and panels use pure black. The pencil enables a compact monochrome editing tray; colours are requested
 from its palette button. Done returns to reading. Hand scrolls/selects text and,
 only during editing, drags app-created text/signatures. Two fingers navigate
@@ -38,6 +44,10 @@ source fingerprint. Rendering uses a private immutable base with app-owned
 annotations removed; overlays draw those models once. PDFBox always reads a
 separate snapshot, not the file held open by PdfRenderer. Reorder/delete are
 virtual until export; append creates a fresh immutable base and one history entry.
+The Add pages tile opens SAF, then a source thumbnail picker for all pages or a
+chosen subset in original order. Selection survives recreation; VM-owned import
+status prevents duplicate additions and retains selection on failure. Preview
+uses a separate file with cancellation-safe renderer ownership.
 
 `PdfBoxDocumentContent` writes standard Ink, FreeText and Highlight annotations
 with appearance streams and serialized app models, preserving foreign annotations

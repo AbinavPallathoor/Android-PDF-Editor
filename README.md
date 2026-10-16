@@ -12,7 +12,9 @@ gradient header, and normal PDF colours keep the document at the centre.
 - Switch between scrolling and page-by-page views, zoom/pan, and copy PDF text.
 - Swipe the document title to move between recent PDFs, with drafts kept intact.
 - At the start of a document, the header appears automatically above the PDF.
-- Reorder, delete, or append pages with document-wide undo/redo and draft recovery.
+- Drag the curved edge scrollbar to browse pages; its page number appears above the handle.
+- Open a bottom panel for page/view and file controls; rename directly in its title.
+- Reorder or delete pages, or add an entire PDF or selected pages, with document-wide undo/redo and draft recovery.
 - Save from the bottom-right corner: create a new file or explicitly replace a writable original.
 - Share the complete annotated PDF while retaining its original text and vectors.
 
@@ -32,6 +34,8 @@ Screenshots show a synthetic sample document; no personal files are included.
 | <img src="docs/screenshots/document-options.png" width="280" alt="Separate page, view, share and compress controls"> | <img src="docs/screenshots/editing.png" width="280" alt="Black editing tray, selected text outline, and bottom-right Save button"> |
 | **Text styling** | **Page management** |
 | <img src="docs/screenshots/text-style.png" width="280" alt="Contextual font selection and local font import"> | <img src="docs/screenshots/pages.png" width="280" alt="Page overview for reordering, deleting and appending"> |
+| **Selected-page import** | **Edge navigation** |
+| <img src="docs/screenshots/import-pages.png" width="280" alt="Choosing individual pages from another PDF"> | <img src="docs/screenshots/page-scrollbar.png" width="280" alt="Curved edge scrollbar with the current page above its handle"> |
 
 ## Build and validate
 
@@ -49,7 +53,8 @@ On this machine set `JAVA_HOME=/opt/homebrew/opt/openjdk@21` before Gradle.
 Tests cover document-wide history, page identity, draft recovery, editable PDF
 round-trips, source conflicts, incoming file intents, real multipage editing and
 saving, text selection, layouts, pinch cancellation, and rotated/cropped pages.
-See the [v0.2.1 validation](docs/validation/2026-10-16-v021.md),
+See the [document controls validation](docs/validation/2026-10-16-document-controls.md),
+[v0.2.1 validation](docs/validation/2026-10-16-v021.md),
 [v0.2.0 validation](docs/validation/2026-10-16-v020.md) and
 [PDF validation record](docs/validation/2026-10-15-multipage-editor.md) for test
 results, screenshots, manual save checks, and coverage limits.

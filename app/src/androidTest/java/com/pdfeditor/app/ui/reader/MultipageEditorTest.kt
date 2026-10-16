@@ -10,6 +10,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.toPixelMap
 import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.assert
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.captureToImage
@@ -18,6 +19,7 @@ import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.longClick
 import androidx.compose.ui.test.onAllNodesWithTag
+import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onRoot
@@ -339,10 +341,29 @@ class MultipageEditorTest {
     }
 
     @Test
+    fun edgeCounterFollowsTheMostlyVisiblePageInsteadOfThePreviousPageSliver() {
+        launch()
+        val bounds = compose.onNodeWithTag("pdf-page-0").getUnclippedBoundsInRoot()
+        val height = bounds.bottom - bounds.top
+        val scroll = with(compose.density) { height.toPx() } * .7f
+        compose.mainClock.autoAdvance = false
+        compose.onNodeWithTag("scroll-document").performSemanticsAction(SemanticsActions.ScrollBy) { it(0f, scroll) }
+        compose.mainClock.advanceTimeBy(650)
+        compose.onNodeWithContentDescription("Scroll through pages").assert(
+            SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, "Page 2 of 3"),
+        )
+        compose.onNodeWithContentDescription("Scroll through pages").performSemanticsAction(SemanticsActions.SetProgress) { it(1f) }
+        compose.mainClock.advanceTimeBy(100)
+        compose.onNodeWithContentDescription("Scroll through pages").assert(
+            SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, "Page 3 of 3"),
+        )
+    }
+
+    @Test
     fun expandedDocumentActionsRemainReachableOnAShortScreen() {
         launch(height = 300.dp)
         compose.onNodeWithTag("document-details").performClick()
-        compose.onNodeWithText("Compress a copy").performScrollTo().assertIsDisplayed()
+        compose.onNodeWithText("Compress").performScrollTo().assertIsDisplayed()
         compose.onNodeWithTag("pages").performScrollTo().assertIsDisplayed()
     }
 

@@ -8,8 +8,13 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.awaitEachGesture
@@ -24,6 +29,8 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.displayCutout
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -34,7 +41,10 @@ import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.requiredSize
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.systemBars
+import androidx.compose.foundation.layout.union
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.pager.HorizontalPager
@@ -51,6 +61,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
@@ -224,6 +235,7 @@ private fun EditorDocument(
     var viewportHeight by remember { mutableFloatStateOf(1f) }
     var editingTrayHeight by remember { mutableFloatStateOf(0f) }
     var overview by remember { mutableStateOf(false) }
+    var scrubJob by remember { mutableStateOf<kotlinx.coroutines.Job?>(null) }
     var saveMenu by remember { mutableStateOf(false) }
     var editing by remember { mutableStateOf(false) }
     var chromeVisible by remember { mutableStateOf(true) }
@@ -399,6 +411,19 @@ private fun EditorDocument(
     val isPaged by rememberUpdatedState(state.paged)
     val pageCount by rememberUpdatedState(state.pageCount)
     val currentPage = (if (state.paged) pager.currentPage else list.firstVisibleItemIndex).coerceIn(0, state.pageCount - 1)
+    val displayedPage by remember(state.paged, state.pageCount) {
+        derivedStateOf {
+            if (state.paged) {
+                pager.currentPage
+            } else {
+                val layout = list.layoutInfo
+                layout.visibleItemsInfo.maxByOrNull { item ->
+                    (minOf(item.offset + item.size, layout.viewportEndOffset) - maxOf(item.offset, layout.viewportStartOffset))
+                        .coerceAtLeast(0)
+                }?.index ?: list.firstVisibleItemIndex
+            }.coerceIn(0, state.pageCount - 1)
+        }
+    }
     val atDocumentStart =
         if (state.paged) {
             pager.currentPage == 0 && !pager.isScrollInProgress && zoom <= 1.01f && panY == 0f
@@ -462,7 +487,7 @@ private fun EditorDocument(
         }
     }
     LaunchedEffect(state.documentVersion) {
-        titleThumbnail = renderPage(0, 160, (160 * state.pageAspectRatios[0]).roundToInt().coerceAtLeast(1))
+        titleThumbnail = renderPage(0, 640, (640 * state.pageAspectRatios[0]).roundToInt().coerceAtLeast(1))
     }
     LaunchedEffect(chromeVisible, chromeTick) {
         if (chromeVisible) {
@@ -552,6 +577,11 @@ private fun EditorDocument(
     })
     val finishTextNow by rememberUpdatedState(::finishText)
     Box(modifier.fillMaxSize().background(Color.Black).imePadding()) {
+        // Extend the page's blank margin behind the fading header at the document start.
+        // Its text still begins below the controls, without a solid black band hiding the fade.
+        if (pinnedHeader) {
+            Box(Modifier.fillMaxWidth().height(headerInset + 16.dp).background(if (state.invertColors) Color.Black else Color.White))
+        }
         Box(
             Modifier.fillMaxSize().padding(top = headerInset).clipToBounds().testTag("document-surface")
                 .onSizeChanged {
@@ -865,18 +895,68 @@ private fun EditorDocument(
             )
         }
         AnimatedVisibility(
-            visible = !editing && list.isScrollInProgress || zoomVisible,
+            visible = zoomVisible,
             enter = fadeIn(),
             exit = fadeOut(),
             modifier = Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(bottom = if (editing) 128.dp else 24.dp),
         ) {
             Text(
-                if (zoomVisible) "${(zoom * 100).roundToInt()}%" else "${currentPage + 1} / ${state.pageCount}",
+                "${(zoom * 100).roundToInt()}%",
                 Modifier.background(Color.Black, androidx.compose.foundation.shape.RoundedCornerShape(20.dp))
                     .padding(horizontal = 14.dp, vertical = 7.dp).testTag("zoom-label"),
                 style = MaterialTheme.typography.labelSmall,
             )
         }
+        val pageGapPx = with(density) { 12.dp.toPx() }
+        val pageStarts =
+            remember(state.pageAspectRatios, viewportWidth, zoom, pageGapPx) {
+                FloatArray(state.pageCount + 1).also { offsets ->
+                    state.pageAspectRatios.forEachIndexed { i, ratio ->
+                        offsets[i + 1] = offsets[i] + viewportWidth * zoom * ratio + pageGapPx
+                    }
+                }
+            }
+        val scrollRange =
+            (pageStarts.last() + pageGapPx + with(density) { (editingBottom + floatingSaveSpace).toPx() } - viewportHeight)
+                .coerceAtLeast(0f)
+        val scrollProgress =
+            if (state.paged) {
+                if (state.pageCount <= 1) 0f else (pager.currentPage + pager.currentPageOffsetFraction) / (state.pageCount - 1)
+            } else {
+                if (scrollRange <= 0f) 0f else (pageStarts[currentPage] + list.firstVisibleItemScrollOffset) / scrollRange
+            }
+        CurvedPageScrollbar(
+            page = displayedPage,
+            pageCount = state.pageCount,
+            progress = scrollProgress.coerceIn(0f, 1f),
+            visible = list.isScrollInProgress || pager.isScrollInProgress,
+            onScrub = { fraction ->
+                scrubJob?.cancel()
+                scrubJob =
+                    scope.launch {
+                        if (state.paged) {
+                            pager.scrollToPage((fraction * (state.pageCount - 1)).roundToInt())
+                        } else {
+                            val target = fraction * scrollRange
+                            val index = (pageStarts.indexOfLast { it <= target }).coerceIn(0, state.pageCount - 1)
+                            list.scrollToItem(index, (target - pageStarts[index]).roundToInt().coerceAtLeast(0))
+                        }
+                    }
+            },
+            onDraggingChanged = { dragging ->
+                if (dragging) {
+                    finishText()
+                    selection = null
+                    selectedObject = null
+                    navigationEpoch++
+                    chromeVisible = false
+                }
+            },
+            modifier =
+                Modifier.align(Alignment.CenterEnd).fillMaxHeight()
+                    .windowInsetsPadding(WindowInsets.systemBars.union(WindowInsets.displayCutout))
+                    .padding(top = 64.dp, bottom = editingBottom + floatingSaveSpace + 16.dp),
+        )
         (fontMessage ?: missingFontNotice ?: state.message)?.let { message ->
             var dismissed by remember(message) { mutableStateOf(false) }
             LaunchedEffect(message) {
@@ -896,7 +976,7 @@ private fun EditorDocument(
             }
         }
         DocumentTitleBar(
-            state.displayName, "${currentPage + 1} / ${state.pageCount}", titleThumbnail,
+            state.displayName, "${displayedPage + 1} / ${state.pageCount}", titleThumbnail,
             visible = chromeVisible || pinnedHeader, invertColors = state.invertColors,
             contentResolver = context.contentResolver, adjacentDocument = adjacentDocument,
             onRename = onRename, onShare = onShare, onCompress = {
@@ -943,7 +1023,11 @@ private fun EditorDocument(
             },
         )
     }
-    if (overview) {
+    AnimatedVisibility(
+        visible = overview,
+        enter = fadeIn(tween(220)) + slideInVertically(tween(300)) { it / 12 } + scaleIn(tween(300), initialScale = .97f),
+        exit = fadeOut(tween(160)) + slideOutVertically(tween(200)) { it / 16 } + scaleOut(tween(200), targetScale = .98f),
+    ) {
         PageOverviewScreen(
             state.pageCount, state.documentVersion, state.pageAspectRatios, renderPage,
             onPageSelected = {

@@ -30,6 +30,8 @@ import com.pdfeditor.app.domain.TextBoxAnnotation
 import com.tom_roush.pdfbox.multipdf.PDFMergerUtility
 import com.tom_roush.pdfbox.pdmodel.PDDocument
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
@@ -78,6 +80,8 @@ private data class ReaderPreferences(val invert: Boolean = false, val paged: Boo
 
 data class DocumentExport(val file: File, val snapshot: DocumentSnapshot)
 
+data class PageImportStatus(val sourcePath: String, val running: Boolean, val succeeded: Boolean = false, val error: String? = null)
+
 /** One recoverable session: the renderer reads an immutable base; edits refer to stable pages. */
 class ReaderViewModel(
     private val recentsRepository: RecentsRepository,
@@ -90,6 +94,9 @@ class ReaderViewModel(
 ) : ViewModel() {
     private val _uiState = MutableStateFlow<ReaderUiState>(ReaderUiState.Loading)
     val uiState: StateFlow<ReaderUiState> = _uiState
+    private val _pageImportStatus = MutableStateFlow<PageImportStatus?>(null)
+    val pageImportStatus: StateFlow<PageImportStatus?> = _pageImportStatus
+    private var pageImportJob: Job? = null
     private val operation = Mutex()
     private val fonts = FontRepository(requireNotNull(workingCopiesDir.parentFile))
     private val content = PdfBoxDocumentContent(fonts)
@@ -206,7 +213,7 @@ class ReaderViewModel(
         }
     }
 
-    private fun launchOperation(block: suspend () -> Unit) {
+    private fun launchOperation(block: suspend () -> Unit) =
         viewModelScope.launch {
             operation.withLock {
                 try {
@@ -223,7 +230,6 @@ class ReaderViewModel(
                 }
             }
         }
-    }
 
     private suspend fun openRenderer() {
         engine?.close()
@@ -345,37 +351,107 @@ class ReaderViewModel(
 
     fun deletePages(indices: Set<Int>) = edit { doc -> doc.delete(indices) }
 
-    fun appendPages(files: List<File>) =
-        launchOperation {
-            val doc = edits ?: return@launchOperation
-            val next = File(sessionDir, "base-${UUID.randomUUID()}.pdf")
-            val oldCount = sizes.size
-            val imported = mutableMapOf<Int, List<Annotation>>()
-            var count = oldCount
-            for (file in files) {
-                content.readAnnotations(file).forEach { (index, annotations) -> imported[count + index] = annotations }
-                count += withContext(Dispatchers.IO) { PDDocument.load(file).use { it.numberOfPages } }
-            }
-            withContext(Dispatchers.IO) {
-                base!!.copyTo(next)
-                PDDocument.load(next).use { target ->
-                    val merger = PDFMergerUtility()
-                    for (file in files) PDDocument.load(file).use { merger.appendDocument(target, it) }
-                    val out = File(sessionDir, "merged-${UUID.randomUUID()}.pdf")
-                    target.save(out)
-                    out.copyTo(next, overwrite = true)
-                    out.delete()
+    fun appendPages(files: List<File>) = appendSelections(files.map { it to null })
+
+    /** Source indices are zero based; chosen pages always enter in their original PDF order. */
+    fun appendPages(
+        file: File,
+        selectedPageIndices: Set<Int>,
+    ): Job {
+        if (_pageImportStatus.value?.running == true) return requireNotNull(pageImportJob)
+        val selection = selectedPageIndices.toSet()
+        _pageImportStatus.value = PageImportStatus(file.absolutePath, running = true)
+        return viewModelScope.launch {
+            val succeeded = appendSelections(listOf(file to selection)).await()
+            _pageImportStatus.value =
+                PageImportStatus(file.absolutePath, running = false, succeeded = succeeded, error = if (succeeded) null else message)
+        }.also { pageImportJob = it }
+    }
+
+    private fun appendSelections(requests: List<Pair<File, Set<Int>?>>) =
+        viewModelScope.async {
+            operation.withLock {
+                try {
+                    appendSelectionsLocked(requests)
+                    true
+                } catch (failure: Exception) {
+                    if (failure is kotlinx.coroutines.CancellationException) throw failure
+                    message = failure.message ?: "Could not add these pages. Your draft is retained."
+                    if (edits != null && engine != null) publish() else _uiState.value = ReaderUiState.Error(message!!)
+                    false
                 }
             }
-            val stripped = File(sessionDir, "base-${UUID.randomUUID()}.pdf")
+        }
+
+    private suspend fun appendSelectionsLocked(requests: List<Pair<File, Set<Int>?>>) {
+        val doc = edits ?: error("Document is not ready.")
+        require(requests.isNotEmpty()) { "Choose a PDF to add." }
+        // Validate every source before creating a replacement base or changing history.
+        val sources =
+            withContext(Dispatchers.IO) {
+                requests.map { (file, selection) ->
+                    val count = PDDocument.load(file).use { it.numberOfPages }
+                    val indices = selection?.sorted() ?: (0 until count).toList()
+                    require(indices.isNotEmpty()) { "Select at least one source page." }
+                    val invalid = indices.filter { it !in 0 until count }
+                    require(invalid.isEmpty()) { "Source page indices are out of range: $invalid." }
+                    file to indices
+                }
+            }
+        val oldBase = base!!
+        val oldCount = sizes.size
+        val imported = mutableMapOf<Int, List<Annotation>>()
+        var count = oldCount
+        for ((file, indices) in sources) {
+            val annotations = content.readAnnotations(file)
+            for (index in indices) imported[count++] = annotations[index].orEmpty()
+        }
+        val next = File(sessionDir, "merge-${UUID.randomUUID()}.pdf")
+        val stripped = File(sessionDir, "base-${UUID.randomUUID()}.pdf")
+        try {
+            withContext(Dispatchers.IO) {
+                // PDFBox reads this copy, never the immutable file held by PdfRenderer.
+                val readCopy = File.createTempFile("append-base-", ".pdf", sessionDir)
+                try {
+                    oldBase.copyTo(readCopy, overwrite = true)
+                    PDDocument.load(readCopy).use { target ->
+                        val merger = PDFMergerUtility()
+                        for ((file, indices) in sources) {
+                            PDDocument.load(file).use { source ->
+                                val selected = indices.toSet()
+                                for (index in source.numberOfPages - 1 downTo 0) {
+                                    if (index !in selected) source.removePage(index)
+                                }
+                                merger.appendDocument(target, source)
+                            }
+                        }
+                        target.save(next)
+                    }
+                } finally {
+                    readCopy.delete()
+                }
+            }
             content.writeAnnotations(next, stripped, emptyMap())
             base = stripped
-            openRenderer()
+            try {
+                openRenderer()
+            } catch (failure: Exception) {
+                base = oldBase
+                openRenderer()
+                throw failure
+            }
             val pages = List(count - oldCount) { DocumentPage(UUID.randomUUID().toString(), oldCount + it) }
             doc.append(pages, pages.associate { it.id to imported[it.sourceIndex].orEmpty() })
+            message = sourceWarning
             persist()
             publish()
+        } finally {
+            withContext(Dispatchers.IO) {
+                next.delete()
+                if (base != stripped) stripped.delete()
+            }
         }
+    }
 
     suspend fun export(): DocumentExport =
         operation.withLock {

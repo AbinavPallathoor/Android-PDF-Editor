@@ -8,20 +8,17 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.IntrinsicSize
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
@@ -176,53 +173,51 @@ internal fun DocumentOptions(
     onShare: () -> Unit,
     onCompress: () -> Unit,
 ) {
-    Surface(
-        Modifier.padding(horizontal = 24.dp, vertical = 12.dp).clickable {},
-        shape = RoundedCornerShape(16.dp),
-        color = Color.Black,
-    ) {
-        val groupShape = RoundedCornerShape(10.dp)
-        val groupModifier =
-            Modifier.fillMaxWidth().height(IntrinsicSize.Min)
-                .clip(groupShape).border(1.dp, Color.White.copy(alpha = .2f), groupShape)
-        val dividerModifier = Modifier.fillMaxHeight().width(1.dp).background(Color.White.copy(alpha = .2f))
-        val cellPadding = PaddingValues(horizontal = 8.dp, vertical = 12.dp)
-        Column(Modifier.padding(8.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            Row(groupModifier, verticalAlignment = Alignment.CenterVertically) {
-                TextButton(
-                    onClick = onPages,
-                    modifier = Modifier.weight(1f).heightIn(min = 48.dp).testTag("pages"),
-                    contentPadding = cellPadding,
-                ) { Text("Pages", color = Color.White, textAlign = TextAlign.Center) }
-                Box(dividerModifier)
-                TextButton(
-                    onClick = onFit,
-                    modifier = Modifier.weight(1f).heightIn(min = 48.dp).testTag("fit-page"),
-                    contentPadding = cellPadding,
-                ) { Text("Fit page", color = Color.White, textAlign = TextAlign.Center) }
-                Box(dividerModifier)
-                TextButton(
-                    onClick = onLayout,
-                    modifier = Modifier.weight(1f).heightIn(min = 48.dp).testTag("layout-toggle"),
-                    contentPadding = cellPadding,
-                ) { Text(if (paged) "Scroll view" else "Page view", color = Color.White, textAlign = TextAlign.Center) }
-            }
-            Row(groupModifier, verticalAlignment = Alignment.CenterVertically) {
-                TextButton(
-                    onClick = onShare,
-                    modifier = Modifier.weight(1f).heightIn(min = 48.dp),
-                    contentPadding = cellPadding,
-                ) { Text("Share", color = Color.White, textAlign = TextAlign.Center) }
-                Box(dividerModifier)
-                TextButton(
-                    onClick = onCompress,
-                    modifier = Modifier.weight(1f).heightIn(min = 48.dp),
-                    contentPadding = cellPadding,
-                ) { Text("Compress a copy", color = Color.White, textAlign = TextAlign.Center) }
-            }
+    Column(Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 4.dp)) {
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
+            DocumentAction(PagesGlyph, "Pages", onPages, Modifier.weight(1f).testTag("pages"))
+            DocumentAction(FitGlyph, "Fit page", onFit, Modifier.weight(1f).testTag("fit-page"))
+            DocumentAction(ViewGlyph, if (paged) "Scroll view" else "Page view", onLayout, Modifier.weight(1f).testTag("layout-toggle"))
+        }
+        Box(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp).height(1.dp).background(Color.White.copy(alpha = .14f)))
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
+            DocumentAction(Icons.Filled.Share, "Share", onShare, Modifier.weight(1f))
+            DocumentAction(CompressGlyph, "Compress", onCompress, Modifier.weight(1f))
         }
     }
 }
+
+@Composable
+private fun DocumentAction(
+    icon: ImageVector,
+    label: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Column(
+        modifier.clip(RoundedCornerShape(12.dp)).clickable(role = Role.Button, onClick = onClick)
+            .padding(horizontal = 4.dp, vertical = 12.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Icon(icon, contentDescription = null, Modifier.size(24.dp), tint = Color.White)
+        Text(label, color = Color.White, style = MaterialTheme.typography.labelMedium, textAlign = TextAlign.Center)
+    }
+}
+
+private val PagesGlyph = glyph("Pages", "M3,2L9,2L9,10L3,10ZM13,2L21,2L21,10L13,10ZM3,14L9,14L9,22L3,22ZM13,14L21,14L21,22L13,22Z")
+private val FitGlyph =
+    glyph(
+        "Fit page",
+        "M3,8L3,2L9,2L9,4L5,4L5,8ZM15,2L21,2L21,8L19,8L19,4L15,4ZM3,16L5,16L5,20L9,20L9,22L3,22Z" +
+            "M19,16L21,16L21,22L15,22L15,20L19,20ZM8,7L16,7L16,17L8,17Z",
+    )
+private val ViewGlyph = glyph("Page view", "M5,2L19,2L19,22L5,22ZM7,4L7,20L17,20L17,4ZM9,6L15,6L15,8L9,8ZM9,10L15,10L15,12L9,12Z")
+private val CompressGlyph =
+    glyph(
+        "Compress",
+        "M5,2L19,2L19,4L5,4ZM11,5L13,5L13,9L16,9L12,13L8,9L11,9ZM5,20L19,20L19,22L5,22ZM11,19L13,19L13,15L16,15L12,11L8,15L11,15Z",
+    )
 
 @Composable
 internal fun QuietIconButton(

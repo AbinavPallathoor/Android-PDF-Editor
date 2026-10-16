@@ -10,8 +10,12 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.getUnclippedBoundsInRoot
 import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performImeAction
+import androidx.compose.ui.test.performTextReplacement
 import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.unit.dp
 import androidx.test.platform.app.InstrumentationRegistry
@@ -25,6 +29,7 @@ import org.junit.Test
 class DocumentTitleBarTest {
     @get:Rule val compose = createComposeRule()
     private val switches = mutableListOf<String>()
+    private val renames = mutableListOf<String>()
 
     private fun launch(
         hasAdjacent: Boolean = true,
@@ -39,7 +44,7 @@ class DocumentTitleBarTest {
                     DocumentTitleBar(
                         "First.pdf", "1 / 3", thumb, true, false, context.contentResolver,
                         adjacentDocument = { if (hasAdjacent) next else null },
-                        onRename = {}, onShare = {}, onCompress = { null },
+                        onRename = { renames.add(it) }, onShare = {}, onCompress = { null },
                         onSwitchDocument = {
                             switches.add(it.uri)
                             canSwitch
@@ -48,6 +53,32 @@ class DocumentTitleBarTest {
                 }
             }
         }
+    }
+
+    @Test
+    fun renameEditsTheTitleInPlaceAndDoneKeepsTheOptionsOpen() {
+        launch()
+        compose.onNodeWithTag("document-details").performClick()
+        compose.onNodeWithTag("expanded-document-name").performClick()
+        compose.onNodeWithTag("inline-document-name").performTextReplacement("Review.pdf")
+        compose.onNodeWithTag("inline-document-name").performImeAction()
+        compose.waitForIdle()
+        assertEquals(listOf("Review.pdf"), renames)
+        compose.onNodeWithContentDescription("Share").assertIsDisplayed()
+        compose.onNodeWithTag("inline-document-name").assertDoesNotExist()
+    }
+
+    @Test
+    fun dismissingTheOptionsDiscardsAnUnconfirmedRename() {
+        launch()
+        compose.onNodeWithTag("document-details").performClick()
+        compose.onNodeWithTag("expanded-document-name").performClick()
+        compose.onNodeWithTag("inline-document-name").performTextReplacement("Unfinished.pdf")
+        compose.onNodeWithContentDescription("Dismiss document options").performClick()
+        compose.waitForIdle()
+        assertTrue(renames.isEmpty())
+        compose.onNodeWithText("Share").assertDoesNotExist()
+        compose.onNodeWithText("First.pdf").assertIsDisplayed()
     }
 
     @Test

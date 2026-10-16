@@ -2,11 +2,15 @@ package com.pdfeditor.app.ui.reader
 
 import android.content.ContentResolver
 import android.graphics.Bitmap
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -24,15 +28,16 @@ import androidx.compose.foundation.layout.displayCutout
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.statusBarsIgnoringVisibility
 import androidx.compose.foundation.layout.union
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -40,6 +45,7 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Share
@@ -51,6 +57,7 @@ import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -59,6 +66,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
@@ -70,19 +79,23 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.window.Popup
-import androidx.compose.ui.window.PopupProperties
 import com.pdfeditor.app.domain.CompressionPreset
 import com.pdfeditor.app.domain.CompressionResult
 import com.pdfeditor.app.domain.RecentDocument
@@ -93,19 +106,16 @@ import kotlin.math.cos
 import kotlin.math.roundToInt
 import kotlin.math.sin
 
-private const val THUMB_TARGET_WIDTH_DP = 200
-private const val THUMB_TARGET_TOP_DP = 140
-private const val GRADIENT_EXTRA_FADE_DP = 48
+private const val THUMB_TARGET_WIDTH_DP = 260
+private const val GRADIENT_EXTRA_FADE_DP = 16
 
 /**
- * A gradient bar (fades to transparent) showing a page-1 thumbnail with the document's name and a
- * page-position subtitle to its left, plus close/write-mode/invert buttons. Shows while scrolling,
- * same idle-hide timing as the page indicator. Tap on the thumbnail morphs it out to the center of
- * the screen with the document title (now tappable to rename) and Share/Compress actions beneath
- * it; a horizontal swipe on the collapsed bar instead switches to the next/previous document in
- * Recents, in place. One unified `awaitEachGesture` distinguishes tap from swipe on the collapsed
- * bar, per the "one gesture reader per surface" rule (see CLAUDE.md).
+ * Camera-safe header with a fade that begins immediately below the system inset. Tapping its
+ * identity morphs the thumbnail into a larger preview above the bottom action deck; the filename
+ * edits inline. Horizontal swipes on the collapsed identity switch recent documents in place.
+ * Gesture arbitration stays in one event reader in HeaderDocumentSwitcher.
  */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun DocumentTitleBar(
     displayName: String,
@@ -129,17 +139,43 @@ fun DocumentTitleBar(
 ) {
     var expanded by remember { mutableStateOf(false) }
     var renaming by remember { mutableStateOf(false) }
+    var renameValue by remember { mutableStateOf(TextFieldValue(displayName)) }
     var swiping by remember { mutableStateOf(false) }
+    var panelTopPx by remember { mutableFloatStateOf(0f) }
+    var rootTopPx by remember { mutableFloatStateOf(0f) }
     val progress = remember { Animatable(0f) }
     var thumbBoundsInRoot by remember { mutableStateOf<Rect?>(null) }
+    val focus = LocalFocusManager.current
+    val keyboard = LocalSoftwareKeyboardController.current
+    val renameFocus = remember { FocusRequester() }
 
+    fun finishRename(commit: Boolean) {
+        if (commit && renameValue.text.isNotBlank()) onRename(renameValue.text.trim())
+        renaming = false
+        focus.clearFocus()
+        keyboard?.hide()
+    }
+
+    fun dismiss() {
+        finishRename(false)
+        expanded = false
+    }
+    BackHandler(expanded) {
+        if (renaming) finishRename(false) else dismiss()
+    }
+    LaunchedEffect(renaming) {
+        if (renaming) {
+            renameFocus.requestFocus()
+            keyboard?.show()
+        }
+    }
     LaunchedEffect(expanded) {
         if (expanded) progress.animateTo(1f, tween(320)) else progress.animateTo(0f, tween(220))
     }
 
-    Box(modifier = modifier.fillMaxSize()) {
+    Box(modifier = modifier.fillMaxSize().onGloballyPositioned { rootTopPx = it.positionInRoot().y }) {
         AnimatedVisibility(
-            visible = visible || expanded || renaming || swiping || progress.value > 0f,
+            visible = visible || expanded || swiping || progress.value > 0f,
             enter = fadeIn(tween(150)),
             exit = fadeOut(tween(150)),
             modifier = Modifier.align(Alignment.TopCenter),
@@ -166,63 +202,93 @@ fun DocumentTitleBar(
 
         if (progress.value > 0f) {
             Box(
-                modifier =
-                    Modifier
-                        .fillMaxSize()
-                        .background(Color.Black.copy(alpha = 0.72f * progress.value))
-                        .then(if (progress.value > 0.3f) Modifier.clickable(onClick = { expanded = false }) else Modifier),
+                Modifier.fillMaxSize()
+                    .background(Color.Black.copy(alpha = 0.86f * progress.value))
+                    .semantics { contentDescription = "Dismiss document options" }
+                    .then(if (progress.value > 0.3f) Modifier.clickable { dismiss() } else Modifier),
             )
-
-            thumbnail?.let { bmp ->
-                BoxWithConstraints(Modifier.fillMaxSize()) {
-                    val density = LocalDensity.current
-                    val screenWidthPx = with(density) { maxWidth.toPx() }
-                    val screenHeightPx = with(density) { maxHeight.toPx() }
+            BoxWithConstraints(Modifier.fillMaxSize()) {
+                val density = LocalDensity.current
+                val screenWidthPx = with(density) { maxWidth.toPx() }
+                val screenHeightPx = with(density) { maxHeight.toPx() }
+                val topInset = WindowInsets.statusBarsIgnoringVisibility.union(WindowInsets.displayCutout).getTop(density)
+                // Use the panel's actual position: ancestors or the window may already handle IME insets.
+                val availableHeight =
+                    ((panelTopPx.takeIf { it > 0f } ?: screenHeightPx) - topInset - with(density) { 48.dp.toPx() })
+                        .coerceAtLeast(0f)
+                thumbnail?.let { bmp ->
                     val aspect = bmp.height.toFloat() / bmp.width.toFloat()
                     val targetWidthPx =
-                        minOf(
-                            with(density) { THUMB_TARGET_WIDTH_DP.dp.toPx() },
-                            screenWidthPx * .75f,
-                            screenHeightPx * .28f / aspect,
-                        )
+                        minOf(with(density) { THUMB_TARGET_WIDTH_DP.dp.toPx() }, screenWidthPx * .68f, availableHeight / aspect)
                     val targetHeightPx = targetWidthPx * aspect
                     val targetLeft = (screenWidthPx - targetWidthPx) / 2f
-                    val targetTop =
-                        minOf(
-                            with(density) { THUMB_TARGET_TOP_DP.dp.toPx() },
-                            maxOf(screenHeightPx * .1f, WindowInsets.statusBars.getTop(density) + with(density) { 16.dp.toPx() }),
-                        )
-
-                    val start = thumbBoundsInRoot ?: Rect(targetLeft, targetTop, targetLeft + targetWidthPx, targetTop + targetHeightPx)
+                    val targetTop = topInset + with(density) { 24.dp.toPx() } + (availableHeight - targetHeightPx) / 2f
+                    val start =
+                        thumbBoundsInRoot ?: Rect(targetLeft, targetTop, targetLeft + targetWidthPx, targetTop + targetHeightPx)
                     val t = progress.value
-                    val left = lerp(start.left, targetLeft, t)
-                    val top = lerp(start.top, targetTop, t)
-                    val width = lerp(start.width, targetWidthPx, t)
-                    val height = lerp(start.height, targetHeightPx, t)
-
                     Image(
                         bitmap = bmp.asImageBitmap(),
-                        contentDescription = null,
+                        contentDescription = "Document preview",
                         contentScale = ContentScale.FillBounds,
                         modifier =
                             Modifier
-                                .offset { IntOffset(left.roundToInt(), top.roundToInt()) }
-                                .size(with(density) { width.toDp() }, with(density) { height.toDp() })
-                                .clip(RoundedCornerShape(10.dp)),
+                                .offset {
+                                    IntOffset(
+                                        lerp(start.left, targetLeft, t).roundToInt(),
+                                        lerp(start.top, targetTop, t).roundToInt(),
+                                    )
+                                }
+                                .size(
+                                    with(density) { lerp(start.width, targetWidthPx, t).toDp() },
+                                    with(density) { lerp(start.height, targetHeightPx, t).toDp() },
+                                )
+                                .clip(RoundedCornerShape(8.dp)),
                     )
-
-                    AnimatedVisibility(
-                        visible = progress.value > 0.6f,
-                        enter = fadeIn(tween(150)),
-                        exit = fadeOut(tween(100)),
-                        modifier =
-                            Modifier
-                                .offset { IntOffset(0, (targetTop + targetHeightPx).roundToInt()) }
-                                .width(maxWidth)
-                                .heightIn(max = with(density) { (screenHeightPx - targetTop - targetHeightPx).coerceAtLeast(1f).toDp() })
-                                .verticalScroll(rememberScrollState()),
+                }
+                AnimatedVisibility(
+                    visible = expanded,
+                    enter = fadeIn(tween(200)) + slideInVertically(tween(280)) { it / 3 },
+                    exit = fadeOut(tween(140)) + slideOutVertically(tween(180)) { it / 4 },
+                    modifier =
+                        Modifier.align(Alignment.BottomCenter).widthIn(max = 560.dp)
+                            .windowInsetsPadding(
+                                WindowInsets.statusBarsIgnoringVisibility.union(WindowInsets.displayCutout).only(WindowInsetsSides.Top),
+                            )
+                            .navigationBarsPadding().imePadding(),
+                ) {
+                    Column(
+                        Modifier.fillMaxWidth().onGloballyPositioned { panelTopPx = it.positionInRoot().y - rootTopPx }
+                            .animateContentSize(tween(220)).verticalScroll(rememberScrollState())
+                            .clip(RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp)).background(Color.Black)
+                            .clickable {}.padding(top = 12.dp, bottom = 16.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
                     ) {
-                        Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.fillMaxWidth()) {
+                        if (renaming) {
+                            TextField(
+                                value = renameValue,
+                                onValueChange = { renameValue = it },
+                                singleLine = true,
+                                textStyle = MaterialTheme.typography.titleMedium.copy(textAlign = TextAlign.Center),
+                                colors =
+                                    TextFieldDefaults.colors(
+                                        focusedContainerColor = Color.Transparent,
+                                        unfocusedContainerColor = Color.Transparent,
+                                        focusedTextColor = Color.White,
+                                        unfocusedTextColor = Color.White,
+                                        cursorColor = Color.White,
+                                        focusedIndicatorColor = Color.White,
+                                        unfocusedIndicatorColor = Color.Transparent,
+                                    ),
+                                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                                keyboardActions = KeyboardActions(onDone = { finishRename(true) }),
+                                trailingIcon = {
+                                    IconGlyphButton(Icons.Filled.Check, "Confirm name", { finishRename(true) })
+                                },
+                                modifier =
+                                    Modifier.fillMaxWidth().padding(horizontal = 24.dp)
+                                        .testTag("inline-document-name").focusRequester(renameFocus),
+                            )
+                        } else {
                             Text(
                                 text = displayName,
                                 style = MaterialTheme.typography.titleMedium,
@@ -231,42 +297,28 @@ fun DocumentTitleBar(
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis,
                                 modifier =
-                                    Modifier
-                                        .padding(top = 16.dp, start = 32.dp, end = 32.dp)
-                                        .clip(RoundedCornerShape(8.dp))
-                                        .clickable(onClick = {
-                                            expanded = false
+                                    Modifier.padding(horizontal = 24.dp).fillMaxWidth()
+                                        .testTag("expanded-document-name").clip(RoundedCornerShape(8.dp))
+                                        .clickable {
+                                            renameValue = TextFieldValue(displayName, TextRange(0, displayName.length))
                                             renaming = true
-                                        })
-                                        .padding(horizontal = 12.dp, vertical = 6.dp),
+                                        }.padding(horizontal = 12.dp, vertical = 16.dp),
                             )
+                        }
+                        if (!renaming) {
                             if (expandedContent != null) {
-                                expandedContent { expanded = false }
+                                expandedContent { dismiss() }
                             } else {
-                                ExpandedActions(
-                                    onShare = {
-                                        expanded = false
-                                        onShare()
-                                    },
-                                    onCompress = onCompress,
-                                )
+                                ExpandedActions(onShare = {
+                                    dismiss()
+                                    onShare()
+                                }, onCompress = onCompress)
                             }
                         }
                     }
                 }
             }
         }
-    }
-
-    if (renaming) {
-        RenamePopup(
-            initialText = displayName,
-            onDismiss = { renaming = false },
-            onCommit = { newName ->
-                renaming = false
-                onRename(newName)
-            },
-        )
     }
 }
 
@@ -296,16 +348,24 @@ private fun CollapsedBar(
     onHeaderHeightChanged: (Int) -> Unit,
     onSwipeActive: (Boolean) -> Unit,
 ) {
-    // Keep the compact controls above both the camera cutout and system status area.
-    // Fade only below the controls; reserving header space must not expose a seam.
-    Box(Modifier.fillMaxWidth()) {
+    val density = LocalDensity.current
+    val cameraInset = WindowInsets.statusBarsIgnoringVisibility.union(WindowInsets.displayCutout)
+    val fadeStart = cameraInset.getTop(density).toFloat()
+    Box(
+        Modifier.fillMaxWidth().background(
+            Brush.verticalGradient(
+                colors = listOf(Color.Black, Color.Transparent),
+                startY = fadeStart,
+                endY = fadeStart + with(density) { (64 + GRADIENT_EXTRA_FADE_DP).dp.toPx() },
+            ),
+        ),
+    ) {
         Column(modifier = Modifier.fillMaxWidth()) {
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 modifier =
                     Modifier
                         .fillMaxWidth()
-                        .background(Color.Black)
                         .onSizeChanged { onHeaderHeightChanged(it.height) }
                         .windowInsetsPadding(
                             WindowInsets.statusBarsIgnoringVisibility.union(WindowInsets.displayCutout).only(WindowInsetsSides.Top),
@@ -333,15 +393,7 @@ private fun CollapsedBar(
                 )
                 InvertToggleButton(invertColors = invertColors, onClick = onToggleInvert)
             }
-            Spacer(
-                Modifier.fillMaxWidth().height(GRADIENT_EXTRA_FADE_DP.dp).background(
-                    Brush.verticalGradient(
-                        0f to Color.Black,
-                        .25f to Color.Black,
-                        1f to Color.Transparent,
-                    ),
-                ),
-            )
+            Spacer(Modifier.fillMaxWidth().height(GRADIENT_EXTRA_FADE_DP.dp))
         }
     }
 }
@@ -504,48 +556,6 @@ private fun PopupAction(
                 .padding(horizontal = 20.dp, vertical = 12.dp),
     ) {
         Text(text = label, style = MaterialTheme.typography.bodyLarge, color = if (enabled) Color.White else OnSurfaceSecondary)
-    }
-}
-
-@Composable
-private fun RenamePopup(
-    initialText: String,
-    onDismiss: () -> Unit,
-    onCommit: (String) -> Unit,
-) {
-    var text by remember { mutableStateOf(initialText) }
-
-    Popup(alignment = Alignment.TopCenter, properties = PopupProperties(focusable = true), onDismissRequest = onDismiss) {
-        Box(
-            modifier =
-                Modifier
-                    .fillMaxSize()
-                    .background(Color.Black.copy(alpha = 0.55f))
-                    .clickable(onClick = { onCommit(text) }),
-        ) {
-            // TextField consumes its own press/drag internally (cursor placement, selection), so
-            // taps on it never fall through to the scrim's onCommit behind it.
-            TextField(
-                value = text,
-                onValueChange = { text = it },
-                singleLine = true,
-                colors =
-                    TextFieldDefaults.colors(
-                        focusedContainerColor = SurfaceElevated,
-                        unfocusedContainerColor = SurfaceElevated,
-                        focusedTextColor = Color.White,
-                        unfocusedTextColor = Color.White,
-                    ),
-                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
-                keyboardActions = KeyboardActions(onDone = { onCommit(text) }),
-                modifier =
-                    Modifier
-                        .align(Alignment.TopCenter)
-                        .padding(top = 60.dp)
-                        .width(220.dp)
-                        .clip(RoundedCornerShape(16.dp)),
-            )
-        }
     }
 }
 

@@ -9,6 +9,7 @@ import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.asPaddingValues
@@ -43,17 +44,15 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
-import com.pdfeditor.app.ui.theme.Accent
 import kotlin.math.roundToInt
 
 /**
- * Opened by pinching out at minimum zoom. Reuses the same `renderThumbnail` render pipeline as the
- * reading pager (just at a lower target resolution), so there's no separate thumbnail cache to
- * maintain. Tap jumps back into reading mode at that page; long-press-drag reorders pages; the "x"
- * badge deletes a page; the trailing "+" tile appends another PDF's pages. Reorder/delete/append
- * all edit a private working copy via `PdfEditor` - the original file is never touched (see
- * CLAUDE.md's Reading/Writing session note).
+ * Page grid, animated into view by the reader. Tap to read a page, long-press-drag to reorder,
+ * or use its delete badge; the Add pages tile opens a source PDF picker with whole/subset import.
+ * Changes belong to the recoverable document session and remain undoable until saving.
  */
 @Composable
 fun PageOverviewScreen(
@@ -200,11 +199,15 @@ private fun AppendTile(onClick: () -> Unit) {
                 .aspectRatio(0.75f)
                 .clip(RoundedCornerShape(6.dp))
                 .background(Color.Black)
-                .border(1.dp, Color.White, RoundedCornerShape(6.dp))
+                .border(1.dp, Color.White.copy(alpha = .25f), RoundedCornerShape(6.dp))
+                .semantics { contentDescription = "Add pages from a PDF" }
                 .clickable(onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
-        Text(text = "+", style = MaterialTheme.typography.headlineMedium, color = Accent)
+        Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text(text = "+", style = MaterialTheme.typography.headlineMedium, color = Color.White)
+            Text("Add pages", style = MaterialTheme.typography.labelMedium, color = Color.White)
+        }
     }
 }
 

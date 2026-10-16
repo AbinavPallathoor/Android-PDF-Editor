@@ -17,7 +17,9 @@ import com.pdfeditor.app.domain.TextBoxAnnotation
 import com.tom_roush.pdfbox.android.PDFBoxResourceLoader
 import com.tom_roush.pdfbox.pdmodel.PDDocument
 import com.tom_roush.pdfbox.pdmodel.PDPage
+import com.tom_roush.pdfbox.pdmodel.PDPageContentStream
 import com.tom_roush.pdfbox.pdmodel.common.PDRectangle
+import com.tom_roush.pdfbox.pdmodel.interactive.annotation.PDAnnotationText
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
@@ -34,6 +36,7 @@ import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
 import org.junit.Before
@@ -348,6 +351,112 @@ class ReaderViewModelTest {
                 assertArrayEquals(original, source.readBytes())
                 assertTrue(ready(open(source)).dirty)
             }
+        }
+
+    @Test
+    fun `selected append keeps natural page order editable marks vectors and foreign annotations in one undo`() =
+        runTest {
+            val source = fixture()
+            val appended = annotatedFixture()
+            PDDocument.load(appended).use { pdf ->
+                val selected = pdf.getPage(2)
+                selected.cropBox = PDRectangle(20f, 30f, 300f, 400f)
+                selected.rotation = 90
+                selected.annotations = selected.annotations +
+                    PDAnnotationText().apply {
+                        contents = "Foreign selected note"
+                        rectangle = PDRectangle(30f, 40f, 10f, 10f)
+                    }
+                PDPageContentStream(pdf, selected).use { stream ->
+                    stream.addRect(40f, 50f, 60f, 70f)
+                    stream.fill()
+                }
+                val modified = File(temporary.root, "selected-source.pdf")
+                pdf.save(modified)
+                modified.copyTo(appended, overwrite = true)
+            }
+            val sourceBytes = source.readBytes()
+            val appendedBytes = appended.readBytes()
+            val vm = open(source)
+            val original = ready(vm)
+            var state = changed(vm, original) { vm.appendPages(appended, linkedSetOf(2, 0)) }
+            val appendedIds = state.pageIds.drop(3)
+            assertEquals(5, state.pageCount)
+            assertEquals(original.pageIds, state.pageIds.take(3))
+            assertEquals(2, appendedIds.toSet().size)
+            assertTrue(appendedIds.none { it in original.pageIds })
+            assertEquals(listOf("imported-ink"), state.annotations[3].orEmpty().map { it.id })
+            assertEquals(listOf("imported-text"), state.annotations[4].orEmpty().map { it.id })
+            val exported = vm.export().file
+            PDDocument.load(exported).use { pdf ->
+                assertEquals(listOf(300f, 400f, 500f, 300f, 500f), pdf.pages.map { it.mediaBox.width })
+                assertEquals(90, pdf.getPage(4).rotation)
+                assertEquals(20f, pdf.getPage(4).cropBox.lowerLeftX, .01f)
+                assertEquals(300f, pdf.getPage(4).cropBox.width, .01f)
+                assertTrue(pdf.getPage(4).annotations.any { it.contents == "Foreign selected note" })
+                val operators = pdf.getPage(4).contents.use { it.readBytes().decodeToString() }
+                assertTrue("original vector path must be retained", operators.contains("40 50 60 70 re"))
+            }
+            assertEquals(listOf("imported-text"), content.readAnnotations(exported)[4].orEmpty().map { it.id })
+            assertArrayEquals(sourceBytes, source.readBytes())
+            assertArrayEquals(appendedBytes, appended.readBytes())
+            state = changed(vm, state) { vm.undo() }
+            assertEquals(original.pageIds, state.pageIds)
+            assertFalse(state.dirty)
+            assertFalse(state.canUndo)
+            state = changed(vm, state) { vm.redo() }
+            assertEquals(appendedIds, state.pageIds.drop(3))
+            assertEquals(5, ready(open(source)).pageCount)
+        }
+
+    @Test
+    fun `empty and out of range append selections retain current draft and undo history`() =
+        runTest {
+            val vm = open(fixture())
+            var state = ready(vm)
+            val initialIds = state.pageIds
+            val appended = annotatedFixture()
+            for (selection in listOf(emptySet(), setOf(-1), setOf(3), setOf(0, 9))) {
+                val previous = state
+                state = changed(vm, state) { vm.appendPages(appended, selection) }
+                assertEquals(initialIds, state.pageIds)
+                assertEquals(previous.annotations, state.annotations)
+                assertFalse(state.dirty)
+                assertFalse(state.canUndo)
+                assertNotNull(state.message)
+                PDDocument.load(vm.export().file).use { assertEquals(3, it.numberOfPages) }
+            }
+        }
+
+    @Test
+    fun `whole PDF append remains available and imports every page`() =
+        runTest {
+            val vm = open(fixture())
+            val initial = ready(vm)
+            val appended = annotatedFixture()
+            val state = changed(vm, initial) { vm.appendPages(listOf(appended)) }
+            assertEquals(6, state.pageCount)
+            assertEquals(listOf("imported-ink"), state.annotations[3].orEmpty().map { it.id })
+            assertEquals(listOf("imported-text"), state.annotations[5].orEmpty().map { it.id })
+        }
+
+    @Test
+    fun `import status survives caller recreation rejects duplicate start and reports retry outcome`() =
+        runTest {
+            val vm = open(fixture())
+            ready(vm)
+            val appended = annotatedFixture()
+            vm.appendPages(appended, emptySet()).join()
+            assertFalse(vm.pageImportStatus.value!!.running)
+            assertFalse(vm.pageImportStatus.value!!.succeeded)
+            assertNotNull(vm.pageImportStatus.value!!.error)
+            val first = vm.appendPages(appended, setOf(2))
+            val repeated = vm.appendPages(appended, setOf(2))
+            assertSame("Recreated UI must observe the existing import rather than append twice", first, repeated)
+            first.join()
+            assertTrue(vm.pageImportStatus.value!!.succeeded)
+            assertEquals(appended.absolutePath, vm.pageImportStatus.value!!.sourcePath)
+            assertEquals(4, ready(vm).pageCount)
         }
 
     private fun open(source: File): ReaderViewModel {

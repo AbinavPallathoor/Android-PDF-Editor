@@ -53,6 +53,7 @@ import com.pdfeditor.app.ui.reader.DocumentSwitchFrame
 import com.pdfeditor.app.ui.reader.DocumentSwitchOverlay
 import com.pdfeditor.app.ui.reader.ReaderScreen
 import com.pdfeditor.app.ui.reader.ReaderViewModel
+import com.pdfeditor.app.ui.reader.SourcePageImportDialog
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.emptyFlow
@@ -179,21 +180,41 @@ fun PdfEditorNavGraph(
                             }
                         }
                     }
+                var appendPath by rememberSaveable { mutableStateOf<String?>(null) }
+                var appendName by rememberSaveable { mutableStateOf("") }
+                val importStatus by model.pageImportStatus.collectAsState()
+                val appending = importStatus?.let { it.sourcePath == appendPath && it.running } == true
+                LaunchedEffect(importStatus, appendPath) {
+                    val completed = importStatus
+                    if (completed?.succeeded == true && completed.sourcePath == appendPath) {
+                        appendPath = null
+                        withContext(Dispatchers.IO) { File(completed.sourcePath).delete() }
+                    }
+                }
                 val append =
                     rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
                         if (uri != null) {
                             scope.launch {
                                 try {
-                                    val file =
+                                    val (file, name) =
                                         withContext(Dispatchers.IO) {
                                             val target = File.createTempFile("append-", ".pdf", working)
-                                            val input = contentResolver.openInputStream(uri) ?: error("Could not read the selected PDF.")
-                                            input.use { from -> target.outputStream().use { from.copyTo(it) } }
-                                            target
+                                            try {
+                                                val input =
+                                                    contentResolver.openInputStream(uri)
+                                                        ?: error("Could not read the selected PDF.")
+                                                input.use { from -> target.outputStream().use { from.copyTo(it) } }
+                                                target to resolveDocumentMetadata(contentResolver, uri).displayName
+                                            } catch (failure: Exception) {
+                                                target.delete()
+                                                throw failure
+                                            }
                                         }
-                                    model.appendPages(listOf(file))
+                                    appendName = name
+                                    appendPath = file.absolutePath
                                 } catch (e: Exception) {
-                                    model.report(e.message ?: "Could not append this PDF.")
+                                    if (e is kotlinx.coroutines.CancellationException) throw e
+                                    model.report(e.message ?: "Could not open this PDF.")
                                 }
                             }
                         }
@@ -331,6 +352,19 @@ fun PdfEditorNavGraph(
                         }
                     },
                 )
+                appendPath?.let { path ->
+                    SourcePageImportDialog(
+                        file = File(path),
+                        displayName = appendName,
+                        busy = appending,
+                        importError = importStatus?.takeIf { it.sourcePath == path && !it.running }?.error,
+                        onCancel = {
+                            appendPath = null
+                            scope.launch(Dispatchers.IO) { File(path).delete() }
+                        },
+                        onConfirm = { indices -> model.appendPages(File(path), indices) },
+                    )
+                }
             }
         }
         documentSwitch?.let { frame ->
