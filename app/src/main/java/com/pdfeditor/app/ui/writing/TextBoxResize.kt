@@ -4,7 +4,7 @@ import com.pdfeditor.app.domain.PdfPoint
 import com.pdfeditor.app.domain.PdfRect
 import com.pdfeditor.app.domain.TextBoxAnnotation
 
-internal enum class TextResizeCorner { TOP_LEFT, TOP_RIGHT, BOTTOM_LEFT, BOTTOM_RIGHT }
+internal enum class ResizeCorner { TOP_LEFT, TOP_RIGHT, BOTTOM_LEFT, BOTTOM_RIGHT }
 
 /**
  * Resize in displayed PDF points, keeping the opposite corner fixed whenever the page allows it.
@@ -16,7 +16,7 @@ internal enum class TextResizeCorner { TOP_LEFT, TOP_RIGHT, BOTTOM_LEFT, BOTTOM_
 internal fun resizeTextBox(
     annotation: TextBoxAnnotation,
     originalBounds: PdfRect,
-    corner: TextResizeCorner,
+    corner: ResizeCorner,
     delta: PdfPoint,
     pageWidth: Float,
     pageHeight: Float,
@@ -37,8 +37,8 @@ internal fun resizeTextBox(
     if (values.any { !it.isFinite() } || pageWidth <= 0f || pageHeight <= 0f || annotation.fontSizePoints <= 0f) return null
     if (originalBounds.right < originalBounds.left || originalBounds.bottom < originalBounds.top) return null
 
-    val movesLeft = corner == TextResizeCorner.TOP_LEFT || corner == TextResizeCorner.BOTTOM_LEFT
-    val movesTop = corner == TextResizeCorner.TOP_LEFT || corner == TextResizeCorner.TOP_RIGHT
+    val movesLeft = corner == ResizeCorner.TOP_LEFT || corner == ResizeCorner.BOTTOM_LEFT
+    val movesTop = corner == ResizeCorner.TOP_LEFT || corner == ResizeCorner.TOP_RIGHT
     val minimumWidth = (annotation.fontSizePoints * 2f).coerceAtMost(pageWidth)
     val fixedX =
         if (movesLeft) {

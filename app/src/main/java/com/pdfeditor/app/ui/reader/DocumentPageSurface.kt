@@ -54,10 +54,11 @@ import com.pdfeditor.app.domain.PdfPoint
 import com.pdfeditor.app.domain.PdfTextWord
 import com.pdfeditor.app.domain.SignaturePlacement
 import com.pdfeditor.app.domain.TextBoxAnnotation
-import com.pdfeditor.app.ui.writing.TextResizeCorner
+import com.pdfeditor.app.ui.writing.ResizeCorner
 import com.pdfeditor.app.ui.writing.annotationSelectionBounds
 import com.pdfeditor.app.ui.writing.clampAnnotationToPage
 import com.pdfeditor.app.ui.writing.hitTestAnnotation
+import com.pdfeditor.app.ui.writing.resizeSignature
 import com.pdfeditor.app.ui.writing.resizeTextBox
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.math.hypot
@@ -161,18 +162,23 @@ internal fun DocumentPageSurface(
                             while (pressed) pressed = awaitPointerEvent(PointerEventPass.Initial).changes.any { it.pressed }
                             return@awaitEachGesture
                         }
-                        val selectedText = currentAnnotations.firstOrNull { it.id == selectedId } as? TextBoxAnnotation
-                        val originalBounds = selectedText?.let(::boundsFor)
+                        // Text boxes and signatures both resize from their corner handles.
+                        val resizable =
+                            when (val selected = currentAnnotations.firstOrNull { it.id == selectedId }) {
+                                is TextBoxAnnotation -> selected.takeIf { fontReady(it.fontId) }
+                                is SignaturePlacement -> selected
+                                else -> null
+                            }
+                        val selectedText = resizable as? TextBoxAnnotation
+                        val originalBounds = resizable?.let(::boundsFor)
                         val resizeCorner =
-                            if (allowAnnotationMove && !inlineActive && originalBounds != null &&
-                                fontReady(selectedText.fontId)
-                            ) {
+                            if (allowAnnotationMove && !inlineActive && originalBounds != null) {
                                 val b = originalBounds
                                 listOf(
-                                    TextResizeCorner.TOP_LEFT to Offset(b.left, b.top),
-                                    TextResizeCorner.TOP_RIGHT to Offset(b.right, b.top),
-                                    TextResizeCorner.BOTTOM_LEFT to Offset(b.left, b.bottom),
-                                    TextResizeCorner.BOTTOM_RIGHT to Offset(b.right, b.bottom),
+                                    ResizeCorner.TOP_LEFT to Offset(b.left, b.top),
+                                    ResizeCorner.TOP_RIGHT to Offset(b.right, b.top),
+                                    ResizeCorner.BOTTOM_LEFT to Offset(b.left, b.bottom),
+                                    ResizeCorner.BOTTOM_RIGHT to Offset(b.right, b.bottom),
                                 ).minByOrNull { (_, p) -> (down.position - p * currentScale).getDistance() }
                                     ?.takeIf { (_, p) -> (down.position - p * currentScale).getDistance() <= 22.dp.toPx() }?.first
                             } else {
@@ -307,6 +313,16 @@ internal fun DocumentPageSurface(
                                                 resolveTypeface(selectedText.fontId),
                                             )
                                         }?.let { moving = it }
+                                        change.consume()
+                                    }
+                                    resizeCorner != null && resizable is SignaturePlacement -> {
+                                        resizeSignature(
+                                            resizable,
+                                            resizeCorner,
+                                            PdfPoint((pos.x - down.position.x) / currentScale, (pos.y - down.position.y) / currentScale),
+                                            widthPoints,
+                                            size.height / currentScale,
+                                        )?.let { moving = it }
                                         change.consume()
                                     }
                                     draggable != null -> {
@@ -519,7 +535,14 @@ internal fun DocumentPageSurface(
                                 )
                                 .border(1.dp, if (invert) Color.White else Color.Black).testTag("object-selection-${selected.id}"),
                         )
-                        if (selected is TextBoxAnnotation && allowAnnotationMove && fontReady(selected.fontId)) {
+                        val handles =
+                            when {
+                                !allowAnnotationMove -> null
+                                selected is TextBoxAnnotation && fontReady(selected.fontId) -> "text"
+                                selected is SignaturePlacement -> "signature"
+                                else -> null
+                            }
+                        if (handles != null) {
                             listOf(
                                 "top-left" to Offset(b.left, b.top),
                                 "top-right" to Offset(b.right, b.top),
@@ -538,7 +561,7 @@ internal fun DocumentPageSurface(
                                     Modifier.offset { IntOffset((centerX - radius).roundToInt(), (centerY - radius).roundToInt()) }
                                         .size(8.dp).background(if (invert) Color.Black else Color.White, CircleShape)
                                         .border(1.dp, if (invert) Color.White else Color.Black, CircleShape)
-                                        .testTag("text-resize-$name"),
+                                        .testTag("$handles-resize-$name"),
                                 )
                             }
                         }

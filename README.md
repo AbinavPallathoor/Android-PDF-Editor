@@ -7,7 +7,7 @@ compact black header, and normal PDF colours keep the document at the centre.
 [Download the latest APK](https://github.com/AbinavPallathoor/Android-PDF-Editor/releases/latest)
 
 - Annotate any page with pen strokes, highlights, text, and reusable signatures.
-- Type directly on the page; resize selected text boxes with corner handles.
+- Type directly on the page; resize selected text boxes and signatures with corner handles.
 - Use Hand while editing to select and move drawings, signatures, and text.
 - Tap Fill or Sign hints in detected empty fields to type in place or insert a fitted signature.
 - Change text colour and fonts from the contextual tray. Sans, Serif, and Mono are included; import additional static TrueType fonts locally.
