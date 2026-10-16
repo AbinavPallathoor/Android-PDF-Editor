@@ -75,7 +75,7 @@ results, screenshots, manual save checks, and coverage limits.
   viewers may likewise omit editable annotations; standards-aware viewers such
   as PDFKit render the saved appearance streams.
 - Copying requires an existing text layer. OCR and encrypted PDFs are not supported.
-- Fill hints detect empty text/signature widgets and conservatively match English labels to printed vector boxes/lines. Scans and uncertain or clipped printed geometry are skipped. Hints place editable annotations; they do not update AcroForm data values or create certificate signatures.
+- Fill hints detect empty text/signature widgets and conservatively match English labels to printed vector boxes/lines or typed underscore blanks (`Name: ______`). Scans and uncertain or clipped printed geometry are skipped. Hints place editable annotations; they do not update AcroForm data values or create certificate signatures.
 - Bundled fonts support common Latin, Greek, and Cyrillic text. Extra fonts
   can be imported as static TrueType (.ttf or TrueType-outline .otf) files up to
   16 MiB. Variable fonts, CFF, font collections, and web fonts are unsupported.

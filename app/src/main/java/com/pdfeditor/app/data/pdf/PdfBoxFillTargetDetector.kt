@@ -12,6 +12,7 @@ import com.tom_roush.pdfbox.cos.COSName
 import com.tom_roush.pdfbox.pdmodel.PDDocument
 import com.tom_roush.pdfbox.pdmodel.PDPage
 import com.tom_roush.pdfbox.pdmodel.common.PDRectangle
+import com.tom_roush.pdfbox.pdmodel.graphics.color.PDColor
 import com.tom_roush.pdfbox.pdmodel.graphics.image.PDImage
 import com.tom_roush.pdfbox.pdmodel.interactive.annotation.PDAnnotationWidget
 import com.tom_roush.pdfbox.pdmodel.interactive.form.PDSignatureField
@@ -92,7 +93,9 @@ class PdfBoxFillTargetDetector {
                 PdfBoxDocumentContent().extractText(document, pageIndex).map { word ->
                     word.copy(bounds = coordinates.fromDisplayed(word.bounds))
                 }
-            val labels = words.mapNotNull { word -> labelKind(word.text)?.let { Label(word, it) } }
+            // Typed underscore blanks ("Name: ______") are text, not graphics; split them out as lines.
+            val pieces = words.flatMap(::pieces)
+            val labels = pieces.filterNot { it.line }.mapNotNull { piece -> labelKind(piece.word.text)?.let { Label(piece.word, it) } }
             if (labels.isNotEmpty()) {
                 val graphics = PrintedGraphics(page, coordinates)
                 graphics.processPage(page)
@@ -118,12 +121,91 @@ class PdfBoxFillTargetDetector {
                                 label.word.text.trim(),
                             )
                     }
+                    // Underscores mark where to write, so only other text counts as an existing entry.
+                    val writing = pieces.filter { !it.line && it.word.text.isNotBlank() }.map { it.word.bounds }
+                    pieces.filter { it.line }.forEach { line ->
+                        val (bounds, label) = underscoreField(line.word.bounds, labels) ?: return@forEach
+                        if (!coordinates.contains(bounds) || widgetBounds.any { overlaps(it, bounds) }) return@forEach
+                        val interior = bounds.inset(2f)
+                        if (writing.any { overlaps(interior, it) }) return@forEach
+                        if ((graphics.occupied + foreignMarks).any { overlaps(interior, it) }) return@forEach
+                        if (targets.any { overlaps(coordinates.fromDisplayed(it.bounds), bounds) }) return@forEach
+                        targets +=
+                            PdfFillTarget(
+                                "underscore:$pageIndex:${bounds.left}:${bounds.top}:${bounds.right}:${bounds.bottom}",
+                                coordinates.toDisplayed(bounds),
+                                label.kind,
+                                label.word.text.trim(),
+                            )
+                    }
                 }
             }
             targets.sortedWith(compareBy<PdfFillTarget> { it.bounds.top }.thenBy { it.bounds.left }).take(100)
         }
 
     private data class Label(val word: PdfTextWord, val kind: FillTargetKind)
+
+    /** Part of an extracted word: ordinary text, or a typed underscore [line] to write on. */
+    private data class Piece(val word: PdfTextWord, val line: Boolean)
+
+    /** Split runs of underscores out of a word, giving each part proportional horizontal bounds. */
+    private fun pieces(word: PdfTextWord): List<Piece> {
+        val text = word.text.trimEnd()
+        val runs = UNDERSCORES.findAll(text).toList()
+        val b = word.bounds
+        val width = b.right - b.left
+        // Only horizontal text; a rotated run's proportional split would be meaningless.
+        if (runs.isEmpty() || width <= b.bottom - b.top) return listOf(Piece(word, false))
+
+        fun part(
+            start: Int,
+            end: Int,
+            line: Boolean,
+        ) = Piece(
+            PdfTextWord(
+                text.substring(start, end),
+                PdfRect(b.left + width * start / text.length, b.top, b.left + width * end / text.length, b.bottom),
+            ),
+            line,
+        )
+        val parts = mutableListOf<Piece>()
+        var cursor = 0
+        runs.forEach { run ->
+            if (text.substring(cursor, run.range.first).isNotBlank()) parts += part(cursor, run.range.first, false)
+            parts += part(run.range.first, run.range.last + 1, true)
+            cursor = run.range.last + 1
+        }
+        if (text.substring(cursor).isNotBlank()) parts += part(cursor, text.length, false)
+        return parts
+    }
+
+    /**
+     * The writing area above a typed underscore line, with its label: one on the same line to the
+     * left or just above, or a signature label further above, leaving the space between to sign in.
+     */
+    private fun underscoreField(
+        line: PdfRect,
+        labels: List<Label>,
+    ): Pair<PdfRect, Label>? {
+        if (line.right - line.left < 36f) return null
+        val baseline = line.bottom
+        val height = max(line.bottom - line.top + 4f, 16f)
+        val inline =
+            labels.filter {
+                val b = it.word.bounds
+                b.right <= line.left + 2f && line.left - b.right <= 120f && b.bottom >= line.top - 2f && b.top <= line.bottom + 2f
+            }.minByOrNull { line.left - it.word.bounds.right }
+        if (inline != null) return PdfRect(line.left, baseline - height, line.right, baseline) to inline
+        val above =
+            labels.filter {
+                val b = it.word.bounds
+                val reach = if (it.kind == FillTargetKind.SIGNATURE) 120f else 28f
+                b.bottom <= line.top + 2f && baseline - b.bottom <= reach && b.left < line.right && b.right > line.left - 4f
+            }.minByOrNull { baseline - it.word.bounds.bottom } ?: return null
+        val labelBottom = above.word.bounds.bottom + 2f
+        val top = if (above.kind == FillTargetKind.SIGNATURE) max(labelBottom, baseline - 72f) else max(labelBottom, baseline - height)
+        return if (baseline - top < 8f) null else PdfRect(line.left, top, line.right, baseline) to above
+    }
 
     private fun labelKind(text: String): FillTargetKind? {
         val label = text.trim().lowercase(Locale.ROOT).trimEnd(':', ' ', '_').replace(Regex("\\s+"), " ")
@@ -155,6 +237,7 @@ class PdfBoxFillTargetDetector {
     /** All heuristics use unrotated crop points. Only the public result uses display rotation. */
     private class Coordinates(page: PDPage) {
         private val crop = page.cropBox
+        val area get() = crop.width * crop.height
         private val rotation = ((page.rotation % 360) + 360) % 360
 
         fun point(
@@ -300,14 +383,25 @@ class PdfBoxFillTargetDetector {
         }
 
         override fun fillPath(windingRule: Path.FillType) {
-            // White page/background paint is not evidence of an existing answer.
-            val rgb = graphicsState.nonStrokingColor.toRGB()
-            val white = (rgb shr 16 and 255) >= 250 && (rgb shr 8 and 255) >= 250 && (rgb and 255) >= 250
-            if (!white && graphicsState.nonStrokeAlphaConstant > 0.05) {
-                paths.filter { it.points.isNotEmpty() }.forEach { occupied += bounds(it.points) }
+            // White paint and page-sized backgrounds of any colour are not evidence of an answer.
+            if (!isWhite(graphicsState.nonStrokingColor) && graphicsState.nonStrokeAlphaConstant > 0.05) {
+                paths.filter { it.points.isNotEmpty() }.map { bounds(it.points) }.forEach { rect ->
+                    if ((rect.right - rect.left) * (rect.bottom - rect.top) < coordinates.area * .9f) occupied += rect
+                }
             }
             paths.clear()
             checkComplexity()
+        }
+
+        /**
+         * PDFBox-Android has no ICC/calibrated colour spaces and resolves them to DeviceRGB, so a
+         * one-component ICC grey such as white `1` would convert to black. Read those as grey.
+         */
+        private fun isWhite(color: PDColor): Boolean {
+            val components = color.components
+            if (components.size == 1 && color.colorSpace?.numberOfComponents != 1) return components[0] >= .98f
+            val rgb = runCatching { color.toRGB() }.getOrNull() ?: return false
+            return (rgb shr 16 and 255) >= 250 && (rgb shr 8 and 255) >= 250 && (rgb and 255) >= 250
         }
 
         override fun fillAndStrokePath(windingRule: Path.FillType) {
@@ -351,6 +445,7 @@ class PdfBoxFillTargetDetector {
     }
 
     companion object {
+        private val UNDERSCORES = Regex("_{5,}")
         private val SIGNATURE_LABELS =
             setOf("signature", "sign here", "signed", "signed by", "applicant signature", "signature of applicant")
         private val TEXT_LABELS =

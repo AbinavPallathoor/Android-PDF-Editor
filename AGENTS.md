@@ -93,7 +93,11 @@ without it are kept until reopened). Readers claim their session under the same
 
 `PdfBoxFillTargetDetector` reads a separate immutable snapshot off the UI thread.
 It detects eligible empty text/signature widgets plus conservative English-labelled
-printed boxes/lines, accounting for crop and rotation. Filled/protected/hidden
+printed boxes/lines and typed underscore runs (5+ `_`, split proportionally out
+of extracted words; a signature label may sit up to 120pt above its line),
+accounting for crop and rotation. PDFBox-Android has no ICC/calibrated colour
+spaces (they resolve to DeviceRGB, so ICC grey white `1` reads as black): fills
+treat one-component colours as grey and ignore page-sized backgrounds. Filled/protected/hidden
 widgets and occupied graphics are excluded; explicit clipping suppresses printed
 guesses for the page. There is no OCR. `PdfFillTargetSource` copies each
 renderer base once and keeps one PDFBox document open for every page lookup;

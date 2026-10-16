@@ -4,12 +4,15 @@ import androidx.test.core.app.ApplicationProvider
 import com.pdfeditor.app.domain.FillTargetKind
 import com.pdfeditor.app.domain.PdfRect
 import com.tom_roush.pdfbox.android.PDFBoxResourceLoader
+import com.tom_roush.pdfbox.cos.COSArray
 import com.tom_roush.pdfbox.cos.COSDictionary
 import com.tom_roush.pdfbox.cos.COSName
 import com.tom_roush.pdfbox.pdmodel.PDDocument
 import com.tom_roush.pdfbox.pdmodel.PDPage
 import com.tom_roush.pdfbox.pdmodel.PDPageContentStream
+import com.tom_roush.pdfbox.pdmodel.PDResources
 import com.tom_roush.pdfbox.pdmodel.common.PDRectangle
+import com.tom_roush.pdfbox.pdmodel.common.PDStream
 import com.tom_roush.pdfbox.pdmodel.font.PDType1Font
 import com.tom_roush.pdfbox.pdmodel.interactive.annotation.PDAnnotationWidget
 import com.tom_roush.pdfbox.pdmodel.interactive.form.PDAcroForm
@@ -161,6 +164,83 @@ class PdfBoxFillTargetDetectorTest {
             assertEquals(320f, targets.last().bounds.right, .1f)
             assertEquals(180f, targets.last().bounds.bottom, .1f)
             assertTrue(targets.last().bounds.top < 170f)
+        }
+
+    // Catches missing the common typed-blank form ("Name: ______"), including a signature line
+    // set well below its label as in word-processor exports, and blanks within the label's word.
+    @Test fun typedUnderscoreBlanksProduceFillAndSignSuggestions() =
+        runTest {
+            val blank = "_".repeat(30)
+            val source =
+                fixture { document, _ ->
+                    PDPageContentStream(document, document.getPage(0)).use { stream ->
+                        stream.label("Name: ", 30f, 500f)
+                        stream.label(blank, 70f, 500f)
+                        stream.label("Signature", 30f, 420f)
+                        stream.label(blank, 30f, 330f)
+                        stream.label("Date: $blank", 30f, 250f)
+                    }
+                }
+            val targets = detector.detect(source, 0)
+            assertEquals(listOf(FillTargetKind.TEXT, FillTargetKind.SIGNATURE, FillTargetKind.TEXT), targets.map { it.kind })
+            assertEquals(listOf("Name:", "Signature", "Date:"), targets.map { it.label })
+            val (name, signature, date) = targets.map { it.bounds }
+            assertEquals(70f, name.left, 1f)
+            assertEquals(100f, name.bottom, 1f)
+            assertEquals(30f, signature.left, 1f)
+            assertEquals(270f, signature.bottom, 1f)
+            assertEquals(198f, signature.top, 1f)
+            assertTrue(date.left > 55f && date.bottom in 349f..351f)
+        }
+
+    // Catches a white page background in ICC grey (macOS exports) being read as black ink that
+    // occupies the whole page: PDFBox-Android resolves ICC to DeviceRGB, turning grey 1 into 0.
+    @Test fun iccGreyPageBackgroundDoesNotHideSuggestions() =
+        runTest {
+            val source =
+                fixture { document, _ ->
+                    val page = document.getPage(0)
+                    val profile =
+                        document.document.createCOSStream().apply {
+                            setInt(COSName.N, 1)
+                            setItem(COSName.ALTERNATE, COSName.DEVICEGRAY)
+                            createOutputStream().use { it.write(ByteArray(128)) }
+                        }
+                    val spaces =
+                        COSDictionary().apply {
+                            setItem(
+                                "Cs1",
+                                COSArray().apply {
+                                    add(COSName.ICCBASED)
+                                    add(profile)
+                                },
+                            )
+                        }
+                    page.resources = (page.resources ?: PDResources()).apply { cosObject.setItem(COSName.COLORSPACE, spaces) }
+                    page.setContents(PDStream(document, "q /Cs1 cs 1 sc 0 0 400 600 re f Q\n".byteInputStream()))
+                    PDPageContentStream(document, page, PDPageContentStream.AppendMode.APPEND, false).use { stream ->
+                        stream.label("Name: ${"_".repeat(30)}", 30f, 500f)
+                    }
+                }
+            assertEquals(listOf("Name:"), detector.detect(source, 0).map { it.label })
+        }
+
+    // Catches offering to overwrite a typed answer or treating stray underscores as fields.
+    @Test fun underscoreBlanksSkipAnsweredAndUnlabelledLines() =
+        runTest {
+            val blank = "_".repeat(30)
+            val source =
+                fixture { document, _ ->
+                    PDPageContentStream(document, document.getPage(0)).use { stream ->
+                        stream.label("Email: ", 30f, 500f)
+                        stream.label(blank, 70f, 500f)
+                        stream.label("alex@example.com", 80f, 503f)
+                        stream.label("Remarks", 30f, 400f)
+                        stream.label(blank, 90f, 400f)
+                        stream.label(blank, 30f, 300f)
+                    }
+                }
+            assertTrue(detector.detect(source, 0).isEmpty())
         }
 
     // Catches over-eager table/decoration suggestions and offering to overwrite printed answers.
