@@ -44,6 +44,7 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.toRoute
+import com.pdfeditor.app.PdfEditorApplication
 import com.pdfeditor.app.data.cache.migrateImportedDraft
 import com.pdfeditor.app.data.resolveDocumentMetadata
 import com.pdfeditor.app.domain.RecentsRepository
@@ -164,6 +165,7 @@ fun PdfEditorNavGraph(
                                 contentResolver,
                                 working,
                                 pageBitmapCacheBudgetBytes(context),
+                                (context.applicationContext as? PdfEditorApplication)?.pageRenderCache,
                             ),
                     )
                 val state by model.uiState.collectAsState()

@@ -79,6 +79,18 @@ state clears only for the exact exported snapshot. External changes refresh
 clean drafts; dirty conflicts keep the draft and disable replacement. URI-grant
 flags and cold/warm VIEW/SEND requests flow through `OpenDocumentRequest`.
 
+`PageRenderCache` keeps lossless rendered pages in `cacheDir/rendered_pages`,
+keyed by session, immutable base filename, page and pixel size, so reopening or
+switching documents skips re-rendering. Entries expire 10 days after last use
+(256 MiB cap, pruned at app start). `SourceFingerprintCache` reuses the original's
+SHA-256 only while its reported size and modification time are unchanged and the
+stamp was used within 10 days; missing metadata always re-hashes.
+`WorkingCopyExpiry` (app start) deletes `working_copies/<session>` folders unused
+for 10 days only when the draft is clean, has no annotations, and keeps exactly
+the imported pages in order (`DocumentDraft.importedPageCount`; legacy drafts
+without it are kept until reopened). Readers claim their session under the same
+`workingCopySessions` lock first, as does legacy draft migration.
+
 `PdfBoxFillTargetDetector` reads a separate immutable snapshot off the UI thread.
 It detects eligible empty text/signature widgets plus conservative English-labelled
 printed boxes/lines, accounting for crop and rotation. Filled/protected/hidden

@@ -4,7 +4,6 @@ import android.net.Uri
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
-import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -23,8 +22,6 @@ internal fun documentSessionDirectory(
             .joinToString("") { "%02x".format(it) },
     )
 
-private val importedDraftMigration = Mutex()
-
 /**
  * Adopt a legacy temporary-URI draft before opening its durable imported copy. Copy only the
  * captured draft, its immutable base and preferences; leave the entire original session intact.
@@ -35,7 +32,7 @@ internal suspend fun migrateImportedDraft(
     workingCopiesDir: File,
 ): Boolean =
     withContext(Dispatchers.IO) {
-        importedDraftMigration.withLock {
+        workingCopySessions.withLock {
             if (sourceUri == durableUri) return@withLock false
             val source = documentSessionDirectory(workingCopiesDir, sourceUri)
             val destination = documentSessionDirectory(workingCopiesDir, durableUri)

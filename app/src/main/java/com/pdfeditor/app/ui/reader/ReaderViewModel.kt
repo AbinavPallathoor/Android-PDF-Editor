@@ -5,12 +5,17 @@ import android.graphics.Bitmap
 import android.net.Uri
 import android.os.ParcelFileDescriptor
 import android.provider.DocumentsContract
+import android.provider.OpenableColumns
 import androidx.collection.LruCache
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.pdfeditor.app.data.cache.DocumentDraft
 import com.pdfeditor.app.data.cache.DocumentDraftStore
+import com.pdfeditor.app.data.cache.PageRenderCache
+import com.pdfeditor.app.data.cache.PageRenderKey
+import com.pdfeditor.app.data.cache.SourceFingerprintCache
+import com.pdfeditor.app.data.cache.claimWorkingCopySession
 import com.pdfeditor.app.data.cache.documentSessionDirectory
 import com.pdfeditor.app.data.fonts.FontRepository
 import com.pdfeditor.app.data.pdf.PdfBoxCompressor
@@ -97,6 +102,7 @@ class ReaderViewModel(
     private val contentResolver: ContentResolver,
     private val workingCopiesDir: File,
     cacheBudgetBytes: Int,
+    private val pageStore: PageRenderCache? = null,
 ) : ViewModel() {
     private val _uiState = MutableStateFlow<ReaderUiState>(ReaderUiState.Loading)
     val uiState: StateFlow<ReaderUiState> = _uiState
@@ -108,6 +114,7 @@ class ReaderViewModel(
     private val content = PdfBoxDocumentContent(fonts)
     private val sessionDir = documentSessionDirectory(workingCopiesDir, uri)
     private val drafts = DocumentDraftStore(File(sessionDir, "draft.json"))
+    private val sourceStamps = SourceFingerprintCache(File(sessionDir, "source-stamp.json"))
     private var edits: DocumentEdits? = null
     private var base: File? = null
     private var engine: PdfDocumentRenderer? = null
@@ -124,6 +131,7 @@ class ReaderViewModel(
     private var sourceFingerprint: String? = null
     private var sourceWarning: String? = null
     private var importedCopy = false
+    private var importedPageCount: Int? = null
     private val cache =
         object : LruCache<String, Bitmap>(cacheBudgetBytes) {
             override fun sizeOf(
@@ -139,8 +147,8 @@ class ReaderViewModel(
 
     init {
         launchOperation {
+            claimWorkingCopySession(sessionDir)
             withContext(Dispatchers.IO) {
-                sessionDir.mkdirs()
                 importedCopy = isImportedDocumentUri(uri, File(workingCopiesDir.parentFile, "imported_documents"))
             }
             preferences =
@@ -152,7 +160,11 @@ class ReaderViewModel(
             val recovered = drafts.load()
             val observedFingerprint =
                 withContext(Dispatchers.IO) {
-                    runCatching { contentResolver.openInputStream(uri)?.use(::fingerprint) }.getOrNull()
+                    runCatching {
+                        val (size, modified) = sourceMetadata()
+                        sourceStamps.read(size, modified)
+                            ?: contentResolver.openInputStream(uri)?.use(::fingerprint)?.also { sourceStamps.write(size, modified, it) }
+                    }.getOrNull()
                 }
             val recoveredEdits = recovered?.let { DocumentEdits(it.current, it.saved) }
             val reimport =
@@ -165,6 +177,7 @@ class ReaderViewModel(
                     }
                 edits = recoveredEdits
                 sourceFingerprint = recovered.sourceFingerprint
+                importedPageCount = recovered.importedPageCount
                 sourceWarning =
                     when {
                         observedFingerprint == null -> "The original PDF could not be read. Your draft is recovered; save a copy."
@@ -192,6 +205,7 @@ class ReaderViewModel(
                 base = cleanBase
                 val count = withContext(Dispatchers.IO) { PDDocument.load(cleanBase).use { it.numberOfPages } }
                 require(count > 0) { "This PDF has no pages." }
+                importedPageCount = count
                 val pages = List(count) { DocumentPage(UUID.randomUUID().toString(), it) }
                 edits = DocumentEdits(DocumentSnapshot(pages, annotations.mapKeys { pages[it.key].id }))
                 withContext(Dispatchers.IO) { incoming.delete() }
@@ -216,6 +230,12 @@ class ReaderViewModel(
                 }
             }
             openRenderer()
+            if (importedPageCount == null) {
+                // Drafts from before this was recorded: a clean, unreordered draft covering the
+                // whole base is indistinguishable from a fresh import of it.
+                val doc = edits!!
+                if (!doc.isDirty && doc.current.pages.map { it.sourceIndex } == sizes.indices.toList()) importedPageCount = sizes.size
+            }
             val recent = recentsRepository.getByUri(uri.toString())
             page = (recent?.lastPageIndex ?: 0).coerceIn(0, edits!!.current.pages.lastIndex)
             zoom = recent?.lastZoomScale?.coerceIn(0.25f, 5f) ?: 1f
@@ -284,7 +304,7 @@ class ReaderViewModel(
 
     private suspend fun persist() {
         val doc = edits ?: return
-        drafts.save(DocumentDraft(base!!.name, doc.current, doc.saved, sourceFingerprint))
+        drafts.save(DocumentDraft(base!!.name, doc.current, doc.saved, sourceFingerprint, importedPageCount))
     }
 
     suspend fun renderPage(
@@ -297,10 +317,19 @@ class ReaderViewModel(
             if (widthPx <= 0 || heightPx <= 0) return@withLock null
             val key = "$version:$sourceIndex:$widthPx:$heightPx"
             cache.get(key)?.let { return@withLock it }
+            val renderer = engine ?: return@withLock null
+            // Bases are immutable and uniquely named, so a stored render of one can never go stale.
+            val stored = PageRenderKey(sessionDir.name, base!!.nameWithoutExtension, sourceIndex, widthPx, heightPx)
+            pageStore?.read(stored)?.let { bitmap ->
+                cache.put(key, bitmap)
+                return@withLock bitmap
+            }
             val target = Bitmap.createBitmap(widthPx, heightPx, Bitmap.Config.ARGB_8888)
             try {
-                engine?.renderPage(sourceIndex, target) ?: return@withLock null
+                renderer.renderPage(sourceIndex, target)
                 cache.put(key, target)
+                // Encode off the render lock; rendered bitmaps are never modified or recycled after this.
+                pageStore?.let { store -> viewModelScope.launch { store.write(stored, target) } }
                 target
             } catch (
                 e: Exception,
@@ -643,6 +672,15 @@ class ReaderViewModel(
             }.getOrDefault(true)
         }.getOrDefault(false)
 
+    /** Size and modification time as reported for the original, when the provider offers them. */
+    private fun sourceMetadata(): Pair<Long?, Long?> {
+        if (uri.scheme == ContentResolver.SCHEME_FILE) return File(requireNotNull(uri.path)).let { it.length() to it.lastModified() }
+        return contentResolver.query(uri, null, null, null, null)?.use { cursor ->
+            fun long(column: String) = cursor.getColumnIndex(column).takeIf { it >= 0 && !cursor.isNull(it) }?.let(cursor::getLong)
+            if (cursor.moveToFirst()) long(OpenableColumns.SIZE) to long(DocumentsContract.Document.COLUMN_LAST_MODIFIED) else null
+        } ?: (null to null)
+    }
+
     private fun fingerprint(stream: InputStream): String {
         val digest = MessageDigest.getInstance("SHA-256")
         val buffer = ByteArray(8192)
@@ -676,6 +714,7 @@ class ReaderViewModel(
         private val contentResolver: ContentResolver,
         private val workingCopiesDir: File,
         private val cacheBudgetBytes: Int,
+        private val pageStore: PageRenderCache? = null,
     ) : ViewModelProvider.Factory {
         @Suppress("UNCHECKED_CAST")
         override fun <T : ViewModel> create(modelClass: Class<T>): T =
@@ -687,6 +726,7 @@ class ReaderViewModel(
                 contentResolver,
                 workingCopiesDir,
                 cacheBudgetBytes,
+                pageStore,
             ) as T
     }
 }

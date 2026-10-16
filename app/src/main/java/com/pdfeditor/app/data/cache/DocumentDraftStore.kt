@@ -19,6 +19,8 @@ data class DocumentDraft(
     val current: DocumentSnapshot,
     val saved: DocumentSnapshot,
     val sourceFingerprint: String? = null,
+    /** Pages in the original at import; lets expiry tell untouched sessions from edited ones. */
+    val importedPageCount: Int? = null,
 ) {
     init {
         require(
