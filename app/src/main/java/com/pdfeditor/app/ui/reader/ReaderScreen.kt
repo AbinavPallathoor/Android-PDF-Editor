@@ -99,7 +99,9 @@ import com.pdfeditor.app.data.cache.SignatureRepository
 import com.pdfeditor.app.data.fonts.EditorFont
 import com.pdfeditor.app.data.fonts.FontRepository
 import com.pdfeditor.app.domain.Annotation
+import com.pdfeditor.app.domain.FillTargetKind
 import com.pdfeditor.app.domain.HighlightAnnotation
+import com.pdfeditor.app.domain.PdfFillTarget
 import com.pdfeditor.app.domain.PdfPoint
 import com.pdfeditor.app.domain.PdfTextWord
 import com.pdfeditor.app.domain.RecentDocument
@@ -137,6 +139,7 @@ fun ReaderScreen(
     onRename: (String) -> Unit = {},
     onCompress: () -> Unit = {},
     onDiscardChanges: () -> Unit = {},
+    loadFillTargets: suspend (Int) -> List<PdfFillTarget> = { emptyList() },
     modifier: Modifier = Modifier,
     adjacentDocument: (Boolean) -> RecentDocument? = { null },
     onSwitchDocument: suspend (RecentDocument) -> Boolean = { false },
@@ -192,6 +195,7 @@ fun ReaderScreen(
                 onEditText,
                 onContentReady,
                 onDiscardChanges,
+                loadFillTargets,
             )
     }
 }
@@ -223,6 +227,7 @@ private fun EditorDocument(
     onEditText: (String, TextBoxAnnotation, String) -> Unit,
     onContentReady: () -> Unit,
     onDiscardChanges: () -> Unit,
+    loadFillTargets: suspend (Int) -> List<PdfFillTarget>,
 ) {
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
@@ -250,6 +255,7 @@ private fun EditorDocument(
     var textTarget by remember { mutableStateOf<PageTextEdit?>(null) }
     var caretBounds by remember { mutableStateOf<Rect?>(null) }
     var selectedObject by remember { mutableStateOf<Pair<String, String>?>(null) }
+    var pendingFillSignature by remember { mutableStateOf<Pair<String, PdfFillTarget>?>(null) }
     val density = LocalDensity.current
     val textMeasurer = rememberTextMeasurer()
     val fontRepository = remember(context.filesDir) { FontRepository(context.filesDir) }
@@ -408,6 +414,24 @@ private fun EditorDocument(
     val signatureStore = remember { SignatureRepository(File(context.filesDir, "signatures.json")) }
     var signatures by remember { mutableStateOf<List<SavedSignature>>(emptyList()) }
     var activeSignature by remember { mutableStateOf<SavedSignature?>(null) }
+
+    fun placeFillSignature(
+        pageId: String,
+        target: PdfFillTarget,
+        saved: SavedSignature,
+    ) {
+        if (pageId !in currentReaderState.pageIds) return
+        try {
+            val annotation = signatureForFillTarget(target, saved.strokes, color)
+            onAdd(pageId, annotation)
+            selectedObject = pageId to annotation.id
+            pendingFillSignature = null
+            tool = EditorTool.HAND
+        } catch (failure: IllegalArgumentException) {
+            fontMessage = failure.message ?: "This signature could not be placed. Draw another signature."
+        }
+    }
+
     var pendingDelete by remember { mutableStateOf<Int?>(null) }
     var navigationEpoch by remember { mutableIntStateOf(0) }
     var restoredPosition by remember { mutableStateOf(false) }
@@ -455,6 +479,7 @@ private fun EditorDocument(
         panY = 0f
     }
     LaunchedEffect(currentPage, state.documentVersion) {
+        pendingFillSignature = null
         selection = null
         if (state.paged) {
             panX = 0f
@@ -656,6 +681,19 @@ private fun EditorDocument(
                     val renderHeight = (renderWidth * state.pageAspectRatios[index]).roundToInt().coerceAtLeast(1)
                     var bitmap by remember(pageId, state.documentVersion, renderWidth) { mutableStateOf<Bitmap?>(null) }
                     var words by remember(pageId) { mutableStateOf<List<PdfTextWord>>(emptyList()) }
+                    var fields by remember(pageId, state.documentVersion) { mutableStateOf<List<PdfFillTarget>>(emptyList()) }
+                    LaunchedEffect(pageId, state.documentVersion, editing) {
+                        if (editing) {
+                            fields =
+                                try {
+                                    loadFillTargets(index)
+                                } catch (failure: kotlinx.coroutines.CancellationException) {
+                                    throw failure
+                                } catch (_: Exception) {
+                                    emptyList()
+                                }
+                        }
+                    }
                     LaunchedEffect(pageId, state.documentVersion, renderWidth) {
                         bitmap = renderPage(index, renderWidth, renderHeight)
                         if (index == currentPage) onContentReady()
@@ -681,6 +719,29 @@ private fun EditorDocument(
                         onInlineCaret = { if (textTarget?.pageId == pageId) caretBounds = it },
                         fontTypeface = { typefaces[it] ?: Typeface.DEFAULT },
                         fontAvailable = { it in typefaces },
+                        fillTargets =
+                            if (editing && tool == EditorTool.HAND && textTarget == null) {
+                                availableFillTargets(fields, state.annotations[index].orEmpty())
+                            } else {
+                                emptyList()
+                            },
+                        onFillTarget = { target ->
+                            selection = null
+                            if (target.kind == FillTargetKind.TEXT) {
+                                val annotation = textForFillTarget(target, color, currentFontId)
+                                caretBounds = null
+                                textTarget = PageTextEdit(pageId, annotation, pdfText = "")
+                                selectedObject = pageId to annotation.id
+                            } else {
+                                val saved = activeSignature
+                                if (saved != null) {
+                                    placeFillSignature(pageId, target, saved)
+                                } else {
+                                    pendingFillSignature = pageId to target
+                                    signaturePicker = true
+                                }
+                            }
+                        },
                         onInlineChange = { raw, pdfText ->
                             textTarget?.takeIf { it.pageId == pageId }?.let { edit ->
                                 val height = state.pageWidthsPoints[index] * state.pageAspectRatios[index]
@@ -1100,7 +1161,10 @@ private fun EditorDocument(
         )
     }
     if (signaturePicker) {
-        AlertDialog(onDismissRequest = { signaturePicker = false }, title = { Text("Signatures") }, text = {
+        AlertDialog(onDismissRequest = {
+            signaturePicker = false
+            pendingFillSignature = null
+        }, title = { Text("Signatures") }, text = {
             Column {
                 signatures.forEachIndexed {
                         i,
@@ -1109,7 +1173,8 @@ private fun EditorDocument(
                     TextButton(onClick = {
                         activeSignature = saved
                         signaturePicker = false
-                        tool = EditorTool.SIGN
+                        val field = pendingFillSignature
+                        if (field != null) placeFillSignature(field.first, field.second, saved) else tool = EditorTool.SIGN
                     }) { Text("Use signature ${i + 1}") }
                 }
                 TextButton(onClick = {
@@ -1117,15 +1182,24 @@ private fun EditorDocument(
                     captureSignature = true
                 }) { Text("Draw a new signature") }
             }
-        }, confirmButton = { TextButton(onClick = { signaturePicker = false }) { Text("Cancel") } })
+        }, confirmButton = {
+            TextButton(onClick = {
+                signaturePicker = false
+                pendingFillSignature = null
+            }) { Text("Cancel") }
+        })
     }
     if (captureSignature) {
-        SignatureCapture(onCancel = { captureSignature = false }, onSave = { strokes ->
+        SignatureCapture(onCancel = {
+            captureSignature = false
+            pendingFillSignature = null
+        }, onSave = { strokes ->
             val saved = SavedSignature(strokes)
             signatures = signatures + saved
             activeSignature = saved
             captureSignature = false
-            tool = EditorTool.SIGN
+            val field = pendingFillSignature
+            if (field != null) placeFillSignature(field.first, field.second, saved) else tool = EditorTool.SIGN
             scope.launch { signatureStore.save(signatures) }
         })
     }

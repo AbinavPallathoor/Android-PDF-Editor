@@ -78,6 +78,49 @@ class ReaderViewModelTest {
     }
 
     @Test
+    fun `detected fields follow page order while filled objects remain editable in private drafts`() =
+        runTest {
+            val source = File(temporary.root, "form.pdf")
+            PDDocument().use { pdf ->
+                val first = PDPage(PDRectangle(300f, 400f))
+                pdf.addPage(first)
+                pdf.addPage(PDPage(PDRectangle(300f, 400f)))
+                val form = com.tom_roush.pdfbox.pdmodel.interactive.form.PDAcroForm(pdf)
+                pdf.documentCatalog.acroForm = form
+                val field = com.tom_roush.pdfbox.pdmodel.interactive.form.PDTextField(form)
+                field.partialName = "Name"
+                val widget = field.widgets.single()
+                widget.rectangle = PDRectangle(30f, 200f, 180f, 30f)
+                widget.page = first
+                first.annotations.add(widget)
+                form.fields.add(field)
+                pdf.save(source)
+            }
+            val bytes = source.readBytes()
+            val vm = open(source)
+            var state = ready(vm)
+            val target = vm.fillTargets(0).single()
+            assertEquals(com.pdfeditor.app.domain.FillTargetKind.TEXT, target.kind)
+            assertEquals(com.pdfeditor.app.domain.PdfRect(30f, 170f, 210f, 200f), target.bounds)
+            val annotation = textForFillTarget(target, -16777216, "roboto").copy(text = "Alex", sourceText = "Alex")
+            state = changed(vm, state) { vm.addAnnotation(state.pageIds[0], annotation) }
+            assertTrue(availableFillTargets(vm.fillTargets(0), state.annotations[0].orEmpty()).isEmpty())
+            state = changed(vm, state) { vm.reorderPages(listOf(1, 0)) }
+            assertTrue(vm.fillTargets(0).isEmpty())
+            assertEquals(target.bounds, vm.fillTargets(1).single().bounds)
+            vm.flush()
+            val recovered = open(source)
+            val restored = ready(recovered)
+            assertTrue(availableFillTargets(recovered.fillTargets(1), restored.annotations[1].orEmpty()).isEmpty())
+            assertEquals(listOf(annotation), content.readAnnotations(recovered.export().file)[1])
+            assertArrayEquals(bytes, source.readBytes())
+            state = changed(vm, state) { vm.discardChanges() }
+            assertFalse(state.dirty)
+            assertEquals(target.bounds, vm.fillTargets(0).single().bounds)
+            assertArrayEquals(bytes, source.readBytes())
+        }
+
+    @Test
     fun `discard restores the last saved document durably without changing the original`() =
         runTest {
             val source = annotatedFixture()

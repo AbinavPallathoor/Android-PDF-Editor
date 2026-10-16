@@ -79,6 +79,19 @@ state clears only for the exact exported snapshot. External changes refresh
 clean drafts; dirty conflicts keep the draft and disable replacement. URI-grant
 flags and cold/warm VIEW/SEND requests flow through `OpenDocumentRequest`.
 
+`PdfBoxFillTargetDetector` reads a separate immutable snapshot off the UI thread.
+It detects eligible empty text/signature widgets plus conservative English-labelled
+printed boxes/lines, accounting for crop and rotation. Filled/protected/hidden
+widgets and occupied graphics are excluded; explicit clipping suppresses printed
+guesses for the page. There is no OCR. `withPdfReadCopy` owns acquisition and
+cleanup in a NonCancellable receiving context, then restores caller cancellation
+for detection; never return an acquired resource into a canceled dispatcher.
+Hand shows contextual Fill/Sign hints only while editing. Text opens inline at
+the field bounds; signatures fit/center the target, including a deferred capture
+when no saved signature exists. Hints hide under occupied app annotations and
+return after removal/discard/undo. Placement creates ordinary editable annotations,
+not AcroForm value changes or cryptographic signatures.
+
 Android PdfRenderer does not render every annotation type (Ink is omitted even
 on API 35). Own overlays cover app-created annotations; API 35 text/highlight
 flags help foreign annotations. Foreign annotations remain preserved, but editing

@@ -49,6 +49,7 @@ import androidx.compose.ui.unit.dp
 import com.pdfeditor.app.domain.Annotation
 import com.pdfeditor.app.domain.DrawStroke
 import com.pdfeditor.app.domain.HighlightAnnotation
+import com.pdfeditor.app.domain.PdfFillTarget
 import com.pdfeditor.app.domain.PdfPoint
 import com.pdfeditor.app.domain.PdfTextWord
 import com.pdfeditor.app.domain.SignaturePlacement
@@ -105,6 +106,8 @@ internal fun DocumentPageSurface(
     onInlineCaret: (Rect) -> Unit = {},
     fontTypeface: (String) -> Typeface = { Typeface.DEFAULT },
     fontAvailable: (String) -> Boolean = { true },
+    fillTargets: List<PdfFillTarget> = emptyList(),
+    onFillTarget: (PdfFillTarget) -> Unit = {},
 ) {
     val density = LocalDensity.current
     val textMeasurer = rememberTextMeasurer()
@@ -112,6 +115,8 @@ internal fun DocumentPageSurface(
     val fontReady by rememberUpdatedState(fontAvailable)
     val selectedId by rememberUpdatedState(selectedObjectId)
     val inlineActive by rememberUpdatedState(inlineText != null)
+    val currentFillTargets by rememberUpdatedState(fillTargets)
+    val fillAction by rememberUpdatedState(onFillTarget)
 
     fun boundsFor(annotation: Annotation) =
         annotationSelectionBounds(annotation) { text, size ->
@@ -378,7 +383,15 @@ internal fun DocumentPageSurface(
                                                     null
                                                 }
                                             selectObject(hit?.id)
-                                            if (hit == null) pageTap()
+                                            if (hit == null) {
+                                                val point = pdf(down.position)
+                                                val target =
+                                                    currentFillTargets.firstOrNull {
+                                                        point.x in it.bounds.left..it.bounds.right &&
+                                                            point.y in it.bounds.top..it.bounds.bottom
+                                                    }
+                                                if (target != null) fillAction(target) else pageTap()
+                                            }
                                         }
                                         else -> select(null)
                                     }
@@ -403,6 +416,7 @@ internal fun DocumentPageSurface(
                     colorFilter = if (invert) Invert else null,
                 )
             }
+            FillTargetHints(fillTargets, scale, invert, onFillTarget)
             Canvas(Modifier.fillMaxSize()) {
                 fun line(
                     points: List<PdfPoint>,

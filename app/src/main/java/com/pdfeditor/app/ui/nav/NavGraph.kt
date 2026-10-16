@@ -299,6 +299,7 @@ fun PdfEditorNavGraph(
                     },
                     renderPage = model::renderPage,
                     loadText = model::text,
+                    loadFillTargets = model::fillTargets,
                     onPositionChanged = model::updateReadingPosition,
                     onClose = {
                         scope.launch {

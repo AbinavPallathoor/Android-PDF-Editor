@@ -9,6 +9,7 @@ compact black header, and normal PDF colours keep the document at the centre.
 - Annotate any page with pen strokes, highlights, text, and reusable signatures.
 - Type directly on the page; resize selected text boxes with corner handles.
 - Use Hand while editing to select and move drawings, signatures, and text.
+- Tap Fill or Sign hints in detected empty fields to type in place or insert a fitted signature.
 - Change text colour and fonts from the contextual tray. Sans, Serif, and Mono are included; import additional static TrueType fonts locally.
 - Switch between scrolling and page-by-page views, zoom/pan, and copy PDF text.
 - Swipe the document title to move between recent PDFs, with drafts kept intact.
@@ -56,7 +57,8 @@ On this machine set `JAVA_HOME=/opt/homebrew/opt/openjdk@21` before Gradle.
 Tests cover document-wide history, page identity, draft recovery, editable PDF
 round-trips, source conflicts, incoming file intents, real multipage editing and
 saving, text selection, layouts, pinch cancellation, and rotated/cropped pages.
-See the [v0.2.3 validation](docs/validation/2026-10-16-v023.md),
+See the [field suggestions validation](docs/validation/2026-10-16-v024.md),
+[v0.2.3 validation](docs/validation/2026-10-16-v023.md),
 [document controls validation](docs/validation/2026-10-16-document-controls.md),
 [v0.2.1 validation](docs/validation/2026-10-16-v021.md),
 [v0.2.0 validation](docs/validation/2026-10-16-v020.md) and
@@ -73,6 +75,7 @@ results, screenshots, manual save checks, and coverage limits.
   viewers may likewise omit editable annotations; standards-aware viewers such
   as PDFKit render the saved appearance streams.
 - Copying requires an existing text layer. OCR and encrypted PDFs are not supported.
+- Fill hints detect empty text/signature widgets and conservatively match English labels to printed vector boxes/lines. Scans and uncertain or clipped printed geometry are skipped. Hints place editable annotations; they do not update AcroForm data values or create certificate signatures.
 - Bundled fonts support common Latin, Greek, and Cyrillic text. Extra fonts
   can be imported as static TrueType (.ttf or TrueType-outline .otf) files up to
   16 MiB. Variable fonts, CFF, font collections, and web fonts are unsupported.

@@ -15,7 +15,9 @@ import com.pdfeditor.app.data.cache.documentSessionDirectory
 import com.pdfeditor.app.data.fonts.FontRepository
 import com.pdfeditor.app.data.pdf.PdfBoxCompressor
 import com.pdfeditor.app.data.pdf.PdfBoxDocumentContent
+import com.pdfeditor.app.data.pdf.PdfBoxFillTargetDetector
 import com.pdfeditor.app.data.pdf.PdfRendererEngine
+import com.pdfeditor.app.data.pdf.withPdfReadCopy
 import com.pdfeditor.app.domain.Annotation
 import com.pdfeditor.app.domain.CompressionPreset
 import com.pdfeditor.app.domain.CompressionResult
@@ -25,6 +27,7 @@ import com.pdfeditor.app.domain.DocumentSnapshot
 import com.pdfeditor.app.domain.OpenPdfResult
 import com.pdfeditor.app.domain.PageSize
 import com.pdfeditor.app.domain.PdfDocumentRenderer
+import com.pdfeditor.app.domain.PdfFillTarget
 import com.pdfeditor.app.domain.PdfTextWord
 import com.pdfeditor.app.domain.RecentsRepository
 import com.pdfeditor.app.domain.TextBoxAnnotation
@@ -129,6 +132,7 @@ class ReaderViewModel(
             ) = value.byteCount
         }
     private val textCache = object : LruCache<String, List<PdfTextWord>>(12) {}
+    private val fillCache = object : LruCache<String, List<PdfFillTarget>>(12) {}
 
     init {
         launchOperation {
@@ -252,6 +256,7 @@ class ReaderViewModel(
         }
         cache.evictAll()
         textCache.evictAll()
+        fillCache.evictAll()
         version++
     }
 
@@ -316,6 +321,15 @@ class ReaderViewModel(
                 } finally {
                     withContext(Dispatchers.IO) { copy.delete() }
                 }
+            }
+        }
+
+    suspend fun fillTargets(pageIndex: Int): List<PdfFillTarget> =
+        operation.withLock {
+            val sourceIndex = edits?.current?.pages?.getOrNull(pageIndex)?.sourceIndex ?: return@withLock emptyList()
+            val key = "$version:$sourceIndex"
+            fillCache.get(key) ?: withPdfReadCopy(base!!, sessionDir) { copy ->
+                PdfBoxFillTargetDetector().detect(copy, sourceIndex).also { fillCache.put(key, it) }
             }
         }
 

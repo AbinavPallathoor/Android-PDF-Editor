@@ -15,7 +15,7 @@
 
 ## Then field suggestions
 
-- [ ] Inspect AcroForm widget geometry and PDF text/vector cues using existing PDFBox. Detect empty text/signature fields first; conservative printed box/line inference is advisory and offline.
-- [ ] Offer contextual tap-to-fill suggestions that place normal editable text/signature annotations; never silently write or flatten PDF content.
-- [ ] Test rotated/cropped coordinates, false positives, existing entries, saved/recovered annotations, and integration through normal save/discard behavior.
+- [x] Inspect AcroForm widget geometry and PDF text/vector cues using existing PDFBox. Detect empty text/signature fields first; conservative printed box/line inference is advisory and offline.
+- [x] Offer contextual tap-to-fill suggestions that place normal editable text/signature annotations; never silently write or flatten PDF content.
+- [x] Test rotated/cropped coordinates, false positives, existing entries, saved/recovered annotations, and integration through normal save/discard behavior.
 - [ ] Validate and document detection scope accurately. Keep post-release changes separate from the published fixes unless a further release is requested.
