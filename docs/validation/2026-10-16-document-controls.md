@@ -43,7 +43,7 @@ were used. The existing development emulator's data was retained.
 
 The rename keyboard regression failed before the fix: Android's default pan
 mode moved the whole reader and left a large empty panel. Explicit resize mode
-and accounting for already-consumed insets keep the filename immediately above
+and measuring the actual panel position keep the filename immediately above
 the keyboard. The short-screen test was updated for the new Compress label and
 continues to exercise reachability through the panel's scroll container.
 
@@ -76,12 +76,19 @@ was dragged from the middle to the bottom (5 / 5), then to the top (1 / 5); the
 header returned at the start. No bottom page-counter overlay appeared. The
 updated reader remains open on the isolated emulator.
 
-## Build artifact
+## Release artifact: v0.2.2
 
-Final ktlint, JVM tests, release vital lint, and optimized release build passed.
-The signed local preview is 8,662,627 bytes (8.26 MiB). APK v2/v3 signatures and
-zip alignment verify, with the existing release certificate. Manifest inspection
-shows no Internet or broad storage permission. It keeps version 0.2.1/code 3 as
-a local preview; no GitHub release was published for this iteration.
+The release version is 0.2.2/code 4. Fresh ktlint, 113 JVM tests per debug/release
+variant, release vital lint, and the optimized release build passed after the
+version bump. The signed APK is 8,662,627 bytes (8.26 MiB). APK v2/v3
+signatures and zip alignment verify with the same release certificate as v0.2.1.
+Manifest inspection shows minimum API 26, target API 36, and no Internet or broad
+storage permission.
 
-SHA-256: `9573d9c1b54400be0d4aeb37945312c14b7b641db71ab149e8709814ba8ffcbe`
+The signed APK upgraded the isolated API 35 emulator in place from version
+0.2.1/code 3 to 0.2.2/code 4. The existing document and recents were retained.
+
+SHA-256: `f367b499fc7d8b88114c7eb1767a8ae26141559a25898fdacf0c58092f7bbf19`
+
+The GitHub release includes the signed APK, SHA256SUMS, release notes, and eight
+screenshots. Signing credentials remain outside the repository.
