@@ -36,6 +36,7 @@ import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
@@ -212,9 +213,12 @@ class ReaderViewModelTest {
             assertFalse(ready(vm).dirty)
             assertEquals(mapOf(0 to listOf(ink), 2 to listOf(text)), content.readAnnotations(output))
             assertArrayEquals(original, source.readBytes())
+            // Save-as moves the edits into the new file (the reader switches to it), so the
+            // untouched original reopens clean rather than showing marks it doesn't contain.
             val recoveredSource = ready(open(source))
             assertEquals(state.pageIds, recoveredSource.pageIds)
-            assertEquals(state.annotations, recoveredSource.annotations)
+            assertTrue(recoveredSource.annotations.values.all { it.isEmpty() })
+            assertFalse(recoveredSource.dirty)
             assertTrue(recoveredSource.canSaveOriginal)
 
             val reopened = open(output)
@@ -532,6 +536,38 @@ class ReaderViewModelTest {
             assertEquals(4, ready(vm).pageCount)
         }
 
+    // Catches rename only relabelling the document while the file keeps its old name.
+    @Test
+    fun `renaming the file moves it on disk and returns its new path`() =
+        runTest {
+            val source = fixture()
+            val bytes = source.readBytes()
+            val vm = open(source)
+            ready(vm)
+            val renamed = vm.renameFile("Quarterly report", source)
+            val target = File(source.parentFile, "Quarterly report.pdf")
+            assertEquals(Uri.fromFile(target), renamed)
+            assertFalse(source.exists())
+            assertArrayEquals(bytes, target.readBytes())
+            assertEquals("Quarterly report.pdf", ready(vm).displayName)
+        }
+
+    // Catches a rename overwriting another file that already has the chosen name.
+    @Test
+    fun `renaming never replaces an existing file`() =
+        runTest {
+            val source = fixture()
+            val other = File(source.parentFile, "Taken.pdf").apply { writeText("someone else's file") }
+            val vm = open(source)
+            ready(vm)
+            assertNull(vm.renameFile("Taken", source))
+            assertTrue(source.exists())
+            assertEquals("someone else's file", other.readText())
+            val state = ready(vm)
+            assertEquals("Taken.pdf", state.displayName)
+            assertTrue(state.message.orEmpty().contains("already in that folder"))
+        }
+
     private fun open(source: File): ReaderViewModel {
         val vm =
             ReaderViewModel(
@@ -628,6 +664,11 @@ class ReaderViewModelTest {
         override suspend fun rename(
             id: Long,
             displayName: String,
+        ) = Unit
+
+        override suspend fun updateUri(
+            id: Long,
+            uri: String,
         ) = Unit
 
         override suspend fun remove(id: Long) = Unit

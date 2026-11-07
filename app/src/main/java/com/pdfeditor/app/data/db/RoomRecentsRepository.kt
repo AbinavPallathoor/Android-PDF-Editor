@@ -59,6 +59,11 @@ class RoomRecentsRepository(
         displayName: String,
     ) = dao.rename(id, displayName)
 
+    override suspend fun updateUri(
+        id: Long,
+        uri: String,
+    ) = dao.updateUri(id, uri)
+
     override suspend fun remove(id: Long) = dao.deleteById(id)
 
     override suspend fun setPinned(

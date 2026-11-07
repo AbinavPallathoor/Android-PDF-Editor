@@ -37,6 +37,12 @@ interface RecentsRepository {
         displayName: String,
     )
 
+    /** Points the row at the same document under a new URI, after the file itself was renamed. */
+    suspend fun updateUri(
+        id: Long,
+        uri: String,
+    )
+
     /** Removes the row from recents. Never touches the underlying file. */
     suspend fun remove(id: Long)
 

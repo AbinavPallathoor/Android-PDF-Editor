@@ -6,12 +6,25 @@ import android.net.Uri
 import androidx.core.content.IntentCompat
 import java.util.Locale
 
-data class OpenDocumentRequest(val uri: Uri, val hasPersistentRead: Boolean)
+/** Where a document request came from; decides where Back from its reader goes. */
+object OpenOrigin {
+    /** Picked inside the app: Back returns to Home. */
+    const val IN_APP = 0
+
+    /** Another app started this activity for the PDF: Back finishes, returning to that app. */
+    const val LAUNCHED_APP = 1
+
+    /** Another app sent the PDF to the already-running app: Back sends the task back behind it. */
+    const val BROUGHT_FORWARD = 2
+}
+
+data class OpenDocumentRequest(val uri: Uri, val hasPersistentRead: Boolean, val origin: Int = OpenOrigin.IN_APP)
 
 /** Accept local document handoffs; PdfRenderer reports malformed or unreadable PDF content. */
 fun parsePdfOpenRequest(
     intent: Intent,
     resolver: ContentResolver,
+    origin: Int = OpenOrigin.LAUNCHED_APP,
 ): OpenDocumentRequest? {
     val uri =
         when (intent.action) {
@@ -38,7 +51,7 @@ fun parsePdfOpenRequest(
     // those; file URIs have a usable path, so require a PDF extension when no type is available.
     if (scheme == ContentResolver.SCHEME_FILE && type != "application/pdf" && !uri.path.orEmpty().endsWith(".pdf", true)) return null
 
-    return OpenDocumentRequest(uri, persistReadPermission(uri, intent.flags, resolver))
+    return OpenDocumentRequest(uri, persistReadPermission(uri, intent.flags, resolver), origin)
 }
 
 /** Only persist grant modes actually offered by the provider, never invent a write grant. */

@@ -61,4 +61,18 @@ class SignatureResizeTest {
         )
         assertNull(resizeSignature(signature, ResizeCorner.TOP_LEFT, PdfPoint(Float.NaN, 1f), 600f, 800f))
     }
+
+    // Catches resizing that scales the shape but leaves the line at a fixed thickness.
+    @Test fun lineWidthScalesWithTheSignature() {
+        val placed = signature.copy(strokeWidth = SignaturePlacement.STROKE_WIDTH)
+        val resized = resizeSignature(placed, ResizeCorner.BOTTOM_RIGHT, PdfPoint(100f, 40f), 600f, 800f)!!
+        assertEquals(placed.lineWidthPoints * 2f, resized.lineWidthPoints, .001f)
+    }
+
+    // Catches older signatures changing thickness on load, or still not scaling once resized.
+    @Test fun legacySignatureKeepsItsLineUntilResizedThenScales() {
+        assertEquals(SignaturePlacement.LEGACY_SIGNATURE_LINE_POINTS, signature.lineWidthPoints, .001f)
+        val resized = resizeSignature(signature, ResizeCorner.BOTTOM_RIGHT, PdfPoint(100f, 40f), 600f, 800f)!!
+        assertEquals(SignaturePlacement.LEGACY_SIGNATURE_LINE_POINTS * 2f, resized.lineWidthPoints, .001f)
+    }
 }

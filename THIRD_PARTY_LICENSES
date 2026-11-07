@@ -23,7 +23,7 @@ Kotlin Serialization (kotlinx.serialization)
   License: Apache License 2.0
   https://github.com/Kotlin/kotlinx.serialization
 
-AndroidX Core, Lifecycle, Activity, Navigation Compose
+AndroidX Core, Lifecycle (incl. lifecycle-runtime-compose), Activity, Navigation Compose
   Copyright The Android Open Source Project
   License: Apache License 2.0
   https://developer.android.com/jetpack/androidx

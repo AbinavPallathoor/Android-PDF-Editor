@@ -1,13 +1,19 @@
 package com.pdfeditor.app.ui.reader
 
 import android.graphics.Bitmap
+import android.graphics.RectF
 import android.graphics.Typeface
 import android.provider.OpenableColumns
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.FloatExponentialDecaySpec
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animate
+import androidx.compose.animation.core.animateDecay
 import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -19,9 +25,9 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.calculateCentroid
 import androidx.compose.foundation.gestures.calculatePan
 import androidx.compose.foundation.gestures.calculateZoom
-import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -29,6 +35,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.displayCutout
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
@@ -38,12 +45,15 @@ import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.requiredSize
+import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.systemBars
 import androidx.compose.foundation.layout.union
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -81,7 +91,11 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.util.VelocityTracker
+import androidx.compose.ui.layout.boundsInWindow
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.layout.positionInWindow
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
@@ -111,6 +125,8 @@ import com.pdfeditor.app.ui.writing.clampAnnotationToPage
 import com.pdfeditor.app.ui.writing.hitTestAnnotation
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -140,6 +156,10 @@ fun ReaderScreen(
     onCompress: () -> Unit = {},
     onDiscardChanges: () -> Unit = {},
     loadFillTargets: suspend (Int) -> List<PdfFillTarget> = { emptyList() },
+    cachedPage: (Int) -> Bitmap? = { null },
+    onPrefetchPreviews: (Int) -> Unit = {},
+    onRemoveAnnotations: (String, Set<String>) -> Unit = { pageId, ids -> ids.forEach { onRemoveAnnotation(pageId, it) } },
+    renderRegion: suspend (Int, RectF, Int, Int) -> Bitmap? = { _, _, _, _ -> null },
     modifier: Modifier = Modifier,
     adjacentDocument: (Boolean) -> RecentDocument? = { null },
     onSwitchDocument: suspend (RecentDocument) -> Boolean = { false },
@@ -196,6 +216,10 @@ fun ReaderScreen(
                 onContentReady,
                 onDiscardChanges,
                 loadFillTargets,
+                cachedPage,
+                onPrefetchPreviews,
+                onRemoveAnnotations,
+                renderRegion,
             )
     }
 }
@@ -228,6 +252,10 @@ private fun EditorDocument(
     onContentReady: () -> Unit,
     onDiscardChanges: () -> Unit,
     loadFillTargets: suspend (Int) -> List<PdfFillTarget>,
+    cachedPage: (Int) -> Bitmap?,
+    onPrefetchPreviews: (Int) -> Unit,
+    onRemoveMany: (String, Set<String>) -> Unit,
+    renderRegion: suspend (Int, RectF, Int, Int) -> Bitmap?,
 ) {
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
@@ -236,7 +264,14 @@ private fun EditorDocument(
     val pager = rememberPagerState(initialPage = state.initialPage.coerceIn(0, state.pageCount - 1), pageCount = { state.pageCount })
     var tool by remember { mutableStateOf(EditorTool.HAND) }
     var color by remember { mutableIntStateOf(0xFF000000.toInt()) }
-    var zoom by remember { mutableFloatStateOf(state.initialZoom.coerceIn(.25f, 5f)) }
+    var zoom by remember { mutableFloatStateOf(state.initialZoom.coerceIn(MIN_ZOOM, MAX_ZOOM)) }
+    var renderZoom by remember { mutableFloatStateOf(zoom) }
+    LaunchedEffect(Unit) {
+        snapshotFlow { zoom }.collectLatest { value ->
+            delay(RENDER_SETTLE_MILLIS)
+            renderZoom = value
+        }
+    }
     var panX by remember { mutableFloatStateOf(0f) }
     var panY by remember { mutableFloatStateOf(0f) }
     var viewportWidth by remember { mutableFloatStateOf(1f) }
@@ -435,6 +470,9 @@ private fun EditorDocument(
     var pendingDelete by remember { mutableStateOf<Int?>(null) }
     var navigationEpoch by remember { mutableIntStateOf(0) }
     var restoredPosition by remember { mutableStateOf(false) }
+    // Last settled reading position and the width it was measured at, for re-anchoring on rotation.
+    val readingAnchor = remember { ReadingAnchor() }
+    var anchoredWidth by remember { mutableFloatStateOf(0f) }
     val isPaged by rememberUpdatedState(state.paged)
     val pageCount by rememberUpdatedState(state.pageCount)
     val currentPage = (if (state.paged) pager.currentPage else list.firstVisibleItemIndex).coerceIn(0, state.pageCount - 1)
@@ -499,6 +537,15 @@ private fun EditorDocument(
                 )
             }
             restoredPosition = true
+            anchoredWidth = viewportWidth
+        } else if (restoredPosition && viewportWidth > 1f && viewportWidth != anchoredWidth) {
+            // Rotation or a window resize: pages change height, so a pixel offset no longer
+            // means the same place. Return to the same fraction of the same page.
+            if (!state.paged && readingAnchor.page >= 0) {
+                val page = readingAnchor.page.coerceIn(0, state.pageCount - 1)
+                list.scrollToItem(page, (viewportWidth * zoom * state.pageAspectRatios[page] * readingAnchor.fraction).roundToInt())
+            }
+            anchoredWidth = viewportWidth
         }
     }
     LaunchedEffect(state.paged, restoredPosition, state.documentVersion, viewportWidth) {
@@ -511,15 +558,28 @@ private fun EditorDocument(
                 )
             }.collect {
                     (index, offset, scale) ->
+                // Offsets measured against the old width until the rotation re-anchor lands.
+                if (viewportWidth != anchoredWidth) return@collect
                 val safe = index.coerceIn(0, state.pageCount - 1)
-                onPositionChanged(safe, scale, (offset / (viewportWidth * scale * state.pageAspectRatios[safe])).coerceIn(0f, 1f))
+                val fraction = (offset / (viewportWidth * scale * state.pageAspectRatios[safe])).coerceIn(0f, 1f)
+                readingAnchor.page = safe
+                readingAnchor.fraction = fraction
+                onPositionChanged(safe, scale, fraction)
             }
         }
     }
+    var firstPainted by remember(state.documentVersion) { mutableStateOf(false) }
     LaunchedEffect(state.documentVersion) {
         panX = 0f
         panY = 0f
+        // The header thumbnail waits for the visible page so it never delays first paint.
+        snapshotFlow { firstPainted }.first { it }
         titleThumbnail = renderPage(0, 640, (640 * state.pageAspectRatios[0]).roundToInt().coerceAtLeast(1))
+    }
+    LaunchedEffect(displayedPage, state.documentVersion) {
+        // After the visible pages have had their turn on the renderer.
+        delay(PREFETCH_DELAY_MILLIS)
+        onPrefetchPreviews(displayedPage)
     }
     LaunchedEffect(chromeVisible, chromeTick) {
         if (chromeVisible) {
@@ -596,21 +656,66 @@ private fun EditorDocument(
         panX = 0f
         panY = 0f
     }
-    val updateZoom by rememberUpdatedState<(Float, Offset) -> Unit>({ factor, pan ->
-        zoom = (zoom * factor).coerceIn(.25f, 5f)
+    // [centroid] is the current finger midpoint; the content that was under the previous midpoint
+    // (centroid - pan) follows it, so a pinch zooms about the fingers rather than the page centre.
+    val updateZoom by rememberUpdatedState<(Float, Offset, Offset?, Boolean) -> Unit>({ factor, pan, centroid, elastic ->
+        val previous = zoom
+        zoom = ZoomMath.elasticZoom(zoom, factor, MIN_ZOOM, MAX_ZOOM, elastic)
+        val ratio = zoom / previous
+        val focus = centroid?.minus(pan)
         val maxX = (viewportWidth * (zoom - 1f) / 2f).coerceAtLeast(0f)
-        panX = (panX + pan.x).coerceIn(-maxX, maxX)
+        val scaledX = if (focus != null) ZoomMath.focalPan(panX, viewportWidth / 2f, focus.x, ratio) else panX
+        panX = (scaledX + pan.x).coerceIn(-maxX, maxX)
         if (state.paged) {
             val maxY = ((viewportWidth * zoom * state.pageAspectRatios[currentPage] - usableHeight) / 2f).coerceAtLeast(0f)
-            panY = (panY + pan.y).coerceIn(-maxY, maxY)
+            val scaledY = if (focus != null) ZoomMath.focalPan(panY, usableHeight / 2f, focus.y, ratio) else panY
+            panY = (scaledY + pan.y).coerceIn(-maxY, maxY)
+        } else if (focus != null && ratio != 1f) {
+            // Page heights change with zoom, so re-anchor on the page under the fingers. The
+            // request lands in the same layout pass as the new heights; no per-frame coroutine.
+            val layout = list.layoutInfo
+            val start = layout.viewportStartOffset
+            val item =
+                layout.visibleItemsInfo.firstOrNull { focus.y < it.offset - start + it.size }
+                    ?: layout.visibleItemsInfo.lastOrNull()
+            if (item != null) {
+                val top = ZoomMath.focalTop((item.offset - start).toFloat(), item.size.toFloat(), focus.y, centroid.y, ratio)
+                list.requestScrollToItem(item.index, (-start - top).roundToInt())
+            }
         } else if (pan.y != 0f) {
-            scope.launch { list.scrollBy(-pan.y) }
+            list.dispatchRawDelta(-pan.y)
         }
     })
     val finishTextNow by rememberUpdatedState(::finishText)
+    // Gesture bookkeeping only; none of it is read by composition.
+    val motion = remember { GestureMemory() }
+
+    // Momentum after a zoomed one-finger pan, along the release direction.
+    suspend fun flingPan(velocity: Offset) {
+        val speed = velocity.getDistance()
+        if (speed < MIN_FLING_VELOCITY) return
+        val direction = velocity / speed
+        var travelled = 0f
+        animateDecay(0f, speed, FloatExponentialDecaySpec(frictionMultiplier = 1.6f)) { value, _ ->
+            updateZoom(1f, direction * (value - travelled), null, false)
+            travelled = value
+        }
+    }
+
+    // Animated zoom about [focus], reusing the pinch maths so the tapped point stays put.
+    suspend fun animateZoomTo(
+        target: Float,
+        focus: Offset,
+    ) {
+        animate(zoom, target, animationSpec = spring(stiffness = Spring.StiffnessMediumLow)) { value, _ ->
+            updateZoom(value / zoom, Offset.Zero, focus, false)
+        }
+    }
     Box(modifier.fillMaxSize().background(Color.Black).imePadding()) {
         Box(
-            Modifier.fillMaxSize().padding(top = headerInset).clipToBounds().testTag("document-surface")
+            Modifier.fillMaxSize().padding(top = headerInset)
+                .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Horizontal))
+                .clipToBounds().testTag("document-surface")
                 .onSizeChanged {
                     viewportWidth = it.width.toFloat()
                     viewportHeight = it.height.toFloat()
@@ -618,12 +723,17 @@ private fun EditorDocument(
                 .pointerInput(Unit) {
                     awaitEachGesture {
                         val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+                        motion.job?.cancel()
+                        var moved = 0f
+                        var lastCentroid = down.position
                         var lastPosition = down.position
                         var singlePanning = false
                         var childOwnsGesture = false
                         var hadMultiple = false
                         var multiPanX = 0f
                         var multiZoom = 1f
+                        val velocity = VelocityTracker()
+                        var upTime = down.uptimeMillis
                         do {
                             val event = awaitPointerEvent(PointerEventPass.Initial)
                             if (event.changes.count { it.pressed } >= 2) {
@@ -637,7 +747,9 @@ private fun EditorDocument(
                                 val pan = event.calculatePan()
                                 multiPanX += pan.x
                                 multiZoom *= factor
-                                updateZoom(factor, pan)
+                                val centroid = event.calculateCentroid(useCurrent = true)
+                                if (centroid != Offset.Unspecified) lastCentroid = centroid
+                                updateZoom(factor, pan, centroid, true)
                                 event.changes.forEach { it.consume() }
                             } else if (!hadMultiple) {
                                 // Page tools and PDF text selection claim the Initial pass.
@@ -647,17 +759,44 @@ private fun EditorDocument(
                                 if (change != null) {
                                     if (!singlePanning && change.isConsumed) childOwnsGesture = true
                                     val displacement = change.position - down.position
+                                    moved = maxOf(moved, displacement.getDistance())
                                     if (tool == EditorTool.HAND && zoom > 1.01f && !childOwnsGesture &&
                                         (singlePanning || displacement.getDistance() > viewConfiguration.touchSlop)
                                     ) {
-                                        updateZoom(1f, change.position - lastPosition)
+                                        updateZoom(1f, change.position - lastPosition, null, false)
                                         singlePanning = true
                                         change.consume()
                                     }
+                                    if (singlePanning) velocity.addPosition(change.uptimeMillis, change.position)
                                     lastPosition = change.position
+                                    upTime = change.uptimeMillis
                                 }
                             }
                         } while (event.changes.any { it.pressed })
+                        if (hadMultiple && (zoom < MIN_ZOOM || zoom > MAX_ZOOM)) {
+                            // Spring back from an overshoot, about where the fingers lifted.
+                            motion.job = scope.launch { animateZoomTo(zoom.coerceIn(MIN_ZOOM, MAX_ZOOM), lastCentroid) }
+                        }
+                        if (singlePanning) {
+                            val released = velocity.calculateVelocity()
+                            motion.job = scope.launch { flingPan(Offset(released.x, released.y)) }
+                        }
+                        val isTap =
+                            !hadMultiple && !singlePanning && moved < viewConfiguration.touchSlop &&
+                                upTime - down.uptimeMillis < viewConfiguration.longPressTimeoutMillis
+                        if (isTap && tool == EditorTool.HAND && textTarget == null) {
+                            val previous = motion.lastTap
+                            if (previous != null && down.uptimeMillis - previous.first < viewConfiguration.doubleTapTimeoutMillis &&
+                                (down.position - previous.second).getDistance() < viewConfiguration.touchSlop * 4
+                            ) {
+                                motion.lastTap = null
+                                motion.job = scope.launch { animateZoomTo(if (zoom > 1.01f) 1f else DOUBLE_TAP_ZOOM, down.position) }
+                            } else {
+                                motion.lastTap = down.uptimeMillis to down.position
+                            }
+                        } else {
+                            motion.lastTap = null
+                        }
                         if (isPaged && zoom <= 1.01f && kotlin.math.abs(multiZoom - 1f) < .1f && kotlin.math.abs(multiPanX) > 60f) {
                             scope.launch {
                                 pager.animateScrollToPage(
@@ -677,9 +816,11 @@ private fun EditorDocument(
                     val width = maxWidth * zoom
                     val pageHeight = width * state.pageAspectRatios[index]
                     val density = androidx.compose.ui.platform.LocalDensity.current
-                    val renderWidth = with(density) { width.roundToPx().coerceIn(1, 2048) }
+                    // Renders follow the settled zoom, not every pinch frame. Until a sharper
+                    // render lands, the page keeps showing (stretched) whatever it already had.
+                    val renderWidth = with(density) { (maxWidth * renderZoom).roundToPx().coerceIn(1, MAX_RENDER_WIDTH_PX) }
                     val renderHeight = (renderWidth * state.pageAspectRatios[index]).roundToInt().coerceAtLeast(1)
-                    var bitmap by remember(pageId, state.documentVersion, renderWidth) { mutableStateOf<Bitmap?>(null) }
+                    var bitmap by remember(pageId, state.documentVersion) { mutableStateOf(cachedPage(index)) }
                     var words by remember(pageId) { mutableStateOf<List<PdfTextWord>>(emptyList()) }
                     var fields by remember(pageId, state.documentVersion) { mutableStateOf<List<PdfFillTarget>>(emptyList()) }
                     LaunchedEffect(pageId, state.documentVersion, editing) {
@@ -695,10 +836,38 @@ private fun EditorDocument(
                         }
                     }
                     LaunchedEffect(pageId, state.documentVersion, renderWidth) {
-                        bitmap = renderPage(index, renderWidth, renderHeight)
-                        if (index == currentPage) onContentReady()
+                        renderPage(index, renderWidth, renderHeight)?.let { bitmap = it }
+                        if (index == currentPage) {
+                            firstPainted = true
+                            onContentReady()
+                        }
                     }
-                    LaunchedEffect(pageId) { words = runCatching { loadText(index) }.getOrDefault(emptyList()) }
+                    // Past the base render's size cap, render just the on-screen part sharply once
+                    // the view settles. The visible rect is read only here, never in composition,
+                    // so scrolling doesn't recompose the page.
+                    val visible = remember(pageId) { mutableStateOf<VisiblePart?>(null) }
+                    var detail by remember(pageId, state.documentVersion) { mutableStateOf<PageDetail?>(null) }
+                    LaunchedEffect(pageId, state.documentVersion) {
+                        snapshotFlow { visible.value }.collectLatest { part ->
+                            if (part == null || part.pageWidthPx <= MAX_RENDER_WIDTH_PX * DETAIL_THRESHOLD) {
+                                detail = null
+                                return@collectLatest
+                            }
+                            delay(DETAIL_SETTLE_MILLIS)
+                            val rect = part.rect
+                            if (rect.width < 1f || rect.height < 1f) return@collectLatest
+                            val toPoints = state.pageWidthsPoints[index] / part.pageWidthPx
+                            val region = RectF(rect.left * toPoints, rect.top * toPoints, rect.right * toPoints, rect.bottom * toPoints)
+                            renderRegion(index, region, rect.width.roundToInt(), rect.height.roundToInt())?.let {
+                                detail = PageDetail(it, region)
+                            }
+                        }
+                    }
+                    // Text is only needed for selection; never queue it ahead of first paint.
+                    val painted = bitmap != null
+                    LaunchedEffect(pageId, painted) {
+                        if (painted) words = runCatching { loadText(index) }.getOrDefault(emptyList())
+                    }
                     DocumentPageSurface(
                         pageId,
                         index,
@@ -794,7 +963,7 @@ private fun EditorDocument(
                             onAdd(pageId, it)
                             selectedObject = pageId to it.id
                         },
-                        onReplace = { onReplace(pageId, it) }, onRemove = { onRemove(pageId, it) },
+                        onReplace = { onReplace(pageId, it) }, onRemove = { onRemoveMany(pageId, it) },
                         onText = editText@{ point ->
                             val existing =
                                 hitTestAnnotation(
@@ -830,7 +999,15 @@ private fun EditorDocument(
                             if (selected == null) {
                                 signaturePicker = true
                             } else {
-                                val signature = SignaturePlacement(UUID.randomUUID().toString(), point, selected.strokes, .65f, color)
+                                val signature =
+                                    SignaturePlacement(
+                                        UUID.randomUUID().toString(),
+                                        point,
+                                        selected.strokes,
+                                        .65f,
+                                        color,
+                                        strokeWidth = SignaturePlacement.STROKE_WIDTH,
+                                    )
                                 selectedObject = pageId to signature.id
                                 onAdd(
                                     pageId,
@@ -846,7 +1023,22 @@ private fun EditorDocument(
                             Modifier.requiredSize(
                                 width,
                                 pageHeight,
-                            ).offset { IntOffset(panX.roundToInt(), if (paged)panY.roundToInt() else 0) },
+                            ).offset { IntOffset(panX.roundToInt(), if (paged)panY.roundToInt() else 0) }
+                                .onGloballyPositioned { coordinates ->
+                                    val origin = coordinates.positionInWindow()
+                                    val clipped = coordinates.boundsInWindow()
+                                    visible.value =
+                                        VisiblePart(
+                                            Rect(
+                                                clipped.left - origin.x,
+                                                clipped.top - origin.y,
+                                                clipped.right - origin.x,
+                                                clipped.bottom - origin.y,
+                                            ),
+                                            coordinates.size.width.toFloat(),
+                                        )
+                                },
+                        detail = detail,
                     )
                 }
             }
@@ -934,7 +1126,7 @@ private fun EditorDocument(
             }
             selection?.let { selected ->
                 Surface(
-                    Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(bottom = if (editing) 116.dp else 16.dp),
+                    Modifier.align(Alignment.BottomCenter).aboveTray(editingBottom, 16.dp),
                     shape = MaterialTheme.shapes.medium,
                     color = Color.Black,
                 ) {
@@ -960,8 +1152,10 @@ private fun EditorDocument(
             enter = fadeIn(),
             exit = fadeOut(),
             modifier =
-                Modifier.align(Alignment.BottomCenter).onSizeChanged { editingTrayHeight = it.height.toFloat() }
-                    .testTag("editing-tray").navigationBarsPadding().padding(12.dp),
+                Modifier.align(Alignment.BottomCenter).widthIn(max = MAX_TRAY_WIDTH)
+                    .onSizeChanged { editingTrayHeight = it.height.toFloat() }
+                    .testTag("editing-tray").navigationBarsPadding()
+                    .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Horizontal)).padding(12.dp),
         ) {
             DocumentEditingTray(
                 tool, color, state.canUndo, state.canRedo,
@@ -1000,7 +1194,7 @@ private fun EditorDocument(
             visible = zoomVisible,
             enter = fadeIn(),
             exit = fadeOut(),
-            modifier = Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(bottom = if (editing) 128.dp else 24.dp),
+            modifier = Modifier.align(Alignment.BottomCenter).aboveTray(editingBottom, 24.dp),
         ) {
             Text(
                 "${(zoom * 100).roundToInt()}%",
@@ -1069,9 +1263,7 @@ private fun EditorDocument(
             }
             if (!dismissed) {
                 Surface(
-                    Modifier.align(
-                        Alignment.BottomCenter,
-                    ).navigationBarsPadding().padding(bottom = if (editing) 128.dp else 24.dp, start = 16.dp, end = 16.dp),
+                    Modifier.align(Alignment.BottomCenter).aboveTray(editingBottom, 24.dp).padding(horizontal = 16.dp),
                     shape = MaterialTheme.shapes.medium,
                     color = Color.Black,
                 ) { Text(message, Modifier.padding(12.dp), style = MaterialTheme.typography.bodySmall) }
@@ -1262,3 +1454,34 @@ private fun SignatureCapture(
         }) { Text("Save signature") }
     }, dismissButton = { TextButton(onClick = onCancel) { Text("Cancel") } })
 }
+
+private const val MIN_ZOOM = .25f
+private const val MAX_ZOOM = 5f
+private const val DOUBLE_TAP_ZOOM = 2.5f
+private const val RENDER_SETTLE_MILLIS = 120L
+private const val MAX_RENDER_WIDTH_PX = 2048
+private const val DETAIL_THRESHOLD = 1.02f
+private const val DETAIL_SETTLE_MILLIS = 150L
+private const val MIN_FLING_VELOCITY = 80f
+private const val PREFETCH_DELAY_MILLIS = 400L
+
+private class GestureMemory {
+    var job: kotlinx.coroutines.Job? = null
+    var lastTap: Pair<Long, Offset>? = null
+}
+
+private val MAX_TRAY_WIDTH = 560.dp
+
+/** Bottom overlays sit [gap] above the editing tray when it shows, else above the nav bar. */
+private fun Modifier.aboveTray(
+    trayHeight: androidx.compose.ui.unit.Dp,
+    gap: androidx.compose.ui.unit.Dp,
+): Modifier = if (trayHeight > 0.dp) padding(bottom = trayHeight + gap / 2) else navigationBarsPadding().padding(bottom = gap)
+
+private class ReadingAnchor {
+    var page = -1
+    var fraction = 0f
+}
+
+/** The on-screen part of a laid-out page, in page pixels, and the page's current pixel width. */
+private data class VisiblePart(val rect: Rect, val pageWidthPx: Float)

@@ -83,7 +83,7 @@ fun PageOverviewScreen(
     ) {
         LazyVerticalGrid(
             state = gridState,
-            columns = GridCells.Fixed(3),
+            columns = GridCells.Adaptive(THUMBNAIL_MIN_WIDTH),
             // The status/nav bars intercept touches in their own inset region before the app ever
             // sees them (see CLAUDE.md's gesture-architecture note) - without this, the top row's
             // delete badges would render but never be reachable by touch on a real device.
@@ -279,3 +279,6 @@ private fun OverviewThumbnail(
         }
     }
 }
+
+/** Three columns on a phone in portrait, more as the window widens (landscape, tablets). */
+private val THUMBNAIL_MIN_WIDTH = 104.dp

@@ -2,6 +2,7 @@ package com.pdfeditor.app.ui.reader
 
 import android.content.ContentResolver
 import android.graphics.Bitmap
+import android.graphics.RectF
 import android.net.Uri
 import android.os.ParcelFileDescriptor
 import android.provider.DocumentsContract
@@ -53,8 +54,10 @@ import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import java.io.File
 import java.io.InputStream
+import java.security.DigestInputStream
 import java.security.MessageDigest
 import java.util.UUID
+import kotlin.math.roundToInt
 
 sealed interface ReaderUiState {
     data object Loading : ReaderUiState
@@ -139,6 +142,17 @@ class ReaderViewModel(
                 value: Bitmap,
             ) = value.byteCount
         }
+
+    // Small fixed-width renders of pages near the reader's position. They are only a stand-in so a
+    // page that comes into view mid-zoom shows its content stretched instead of a blank sheet.
+    private val previews =
+        object : LruCache<String, Bitmap>(PREVIEW_CACHE_BYTES) {
+            override fun sizeOf(
+                key: String,
+                value: Bitmap,
+            ) = value.byteCount
+        }
+    private var previewJob: Job? = null
     private val textCache = object : LruCache<String, List<PdfTextWord>>(12) {}
     private val fillCache = object : LruCache<String, List<PdfFillTarget>>(64) {}
 
@@ -158,13 +172,18 @@ class ReaderViewModel(
                     }?.let { runCatching { Json.decodeFromString<ReaderPreferences>(it.readText()) }.getOrNull() } ?: ReaderPreferences()
                 }
             val recovered = drafts.load()
+            // Without a draft the source is imported regardless; the copy below hashes it once.
             val observedFingerprint =
-                withContext(Dispatchers.IO) {
-                    runCatching {
-                        val (size, modified) = sourceMetadata()
-                        sourceStamps.read(size, modified)
-                            ?: contentResolver.openInputStream(uri)?.use(::fingerprint)?.also { sourceStamps.write(size, modified, it) }
-                    }.getOrNull()
+                if (recovered == null) {
+                    null
+                } else {
+                    withContext(Dispatchers.IO) {
+                        runCatching {
+                            val (size, modified) = sourceMetadata()
+                            sourceStamps.read(size, modified)
+                                ?: contentResolver.openInputStream(uri)?.use(::fingerprint)?.also { sourceStamps.write(size, modified, it) }
+                        }.getOrNull()
+                    }
                 }
             val recoveredEdits = recovered?.let { DocumentEdits(it.current, it.saved) }
             val reimport =
@@ -195,15 +214,25 @@ class ReaderViewModel(
             } else {
                 val incoming = File(sessionDir, "import-${UUID.randomUUID()}.pdf")
                 withContext(Dispatchers.IO) {
+                    val metadata = runCatching { sourceMetadata() }.getOrNull()
                     val input = contentResolver.openInputStream(uri) ?: error("The file provider could not open this PDF.")
-                    input.use { from -> incoming.outputStream().use { from.copyTo(it) } }
-                    sourceFingerprint = incoming.inputStream().use(::fingerprint)
+                    val digest = MessageDigest.getInstance("SHA-256")
+                    DigestInputStream(input, digest).use { from -> incoming.outputStream().use { from.copyTo(it) } }
+                    val hash = digest.digest().toHex()
+                    sourceFingerprint = hash
+                    metadata?.let { (size, modified) -> runCatching { sourceStamps.write(size, modified, hash) } }
                 }
-                val annotations = content.readAnnotations(incoming)
+                val inspection = content.inspect(incoming)
+                val annotations = inspection.annotations
                 val cleanBase = File(sessionDir, "base-${UUID.randomUUID()}.pdf")
-                content.writeAnnotations(incoming, cleanBase, emptyMap())
+                if (inspection.hasOwnedAnnotations) {
+                    content.writeAnnotations(incoming, cleanBase, emptyMap())
+                } else {
+                    // Nothing app-owned to strip: the imported bytes already are the clean base.
+                    withContext(Dispatchers.IO) { check(incoming.renameTo(cleanBase)) { "Could not prepare this PDF." } }
+                }
                 base = cleanBase
-                val count = withContext(Dispatchers.IO) { PDDocument.load(cleanBase).use { it.numberOfPages } }
+                val count = inspection.pageCount
                 require(count > 0) { "This PDF has no pages." }
                 importedPageCount = count
                 val pages = List(count) { DocumentPage(UUID.randomUUID().toString(), it) }
@@ -280,6 +309,7 @@ class ReaderViewModel(
         fillSource?.let { old -> withContext(NonCancellable + Dispatchers.IO) { old.close() } }
         fillSource = null
         cache.evictAll()
+        previews.evictAll()
         textCache.evictAll()
         fillCache.evictAll()
         version++
@@ -340,23 +370,88 @@ class ReaderViewModel(
             }
         }
 
-    suspend fun text(pageIndex: Int): List<PdfTextWord> =
+    /**
+     * Renders only [region] (displayed PDF points) of a page into a [widthPx] x [heightPx] bitmap,
+     * for sharp text at zoom levels where a whole-page bitmap would be too large to hold.
+     */
+    suspend fun renderRegion(
+        pageIndex: Int,
+        region: RectF,
+        widthPx: Int,
+        heightPx: Int,
+    ): Bitmap? =
         operation.withLock {
-            val sourceIndex = edits?.current?.pages?.getOrNull(pageIndex)?.sourceIndex ?: return@withLock emptyList()
-            val key = "$version:$sourceIndex"
-            textCache.get(key) ?: run {
-                // Text extraction reads a separate immutable snapshot, never the renderer's open file.
-                val copy =
-                    withContext(Dispatchers.IO) {
-                        File.createTempFile("text-", ".pdf", sessionDir).also { base!!.copyTo(it, overwrite = true) }
-                    }
-                try {
-                    content.extractText(copy, sourceIndex).also { textCache.put(key, it) }
-                } finally {
-                    withContext(Dispatchers.IO) { copy.delete() }
-                }
+            val sourceIndex = edits?.current?.pages?.getOrNull(pageIndex)?.sourceIndex ?: return@withLock null
+            val renderer = engine ?: return@withLock null
+            if (widthPx <= 0 || heightPx <= 0 || region.isEmpty) return@withLock null
+            val target = Bitmap.createBitmap(widthPx, heightPx, Bitmap.Config.ARGB_8888)
+            try {
+                renderer.renderPage(sourceIndex, target, region)
+                target
+            } catch (e: Exception) {
+                target.recycle()
+                if (e is kotlinx.coroutines.CancellationException) throw e
+                null
             }
         }
+
+    /** Sharpest bitmap already in memory for this page, at any size; never renders. */
+    fun cachedPage(pageIndex: Int): Bitmap? {
+        val sourceIndex = edits?.current?.pages?.getOrNull(pageIndex)?.sourceIndex ?: return null
+        val prefix = "$version:$sourceIndex:"
+        return cache.snapshot().entries.filter { it.key.startsWith(prefix) }.maxByOrNull { it.value.width }?.value
+            ?: previews.get("$version:$sourceIndex")
+    }
+
+    /** Fills in low-res stand-ins outward from [center], one page per lock hold so real renders interleave. */
+    fun prefetchPreviews(center: Int) {
+        previewJob?.cancel()
+        previewJob =
+            viewModelScope.launch {
+                val count = edits?.current?.pages?.size ?: return@launch
+                val order = (0..PREVIEW_RADIUS).flatMap { listOf(center + it, center - it) }.distinct().filter { it in 0 until count }
+                for (index in order) renderPreview(index)
+            }
+    }
+
+    private suspend fun renderPreview(pageIndex: Int) =
+        operation.withLock {
+            val sourceIndex = edits?.current?.pages?.getOrNull(pageIndex)?.sourceIndex ?: return@withLock
+            val key = "$version:$sourceIndex"
+            if (previews.get(key) != null) return@withLock
+            if (cache.snapshot().keys.any { it.startsWith("$key:") }) return@withLock
+            val renderer = engine ?: return@withLock
+            val size = sizes.getOrNull(sourceIndex) ?: return@withLock
+            val height = (PREVIEW_WIDTH_PX * size.heightPoints / size.widthPoints).roundToInt().coerceIn(1, PREVIEW_WIDTH_PX * 4)
+            val target = Bitmap.createBitmap(PREVIEW_WIDTH_PX, height, Bitmap.Config.ARGB_8888)
+            try {
+                renderer.renderPage(sourceIndex, target)
+                previews.put(key, target)
+            } catch (e: Exception) {
+                if (e is kotlinx.coroutines.CancellationException) throw e
+                target.recycle()
+            }
+        }
+
+    suspend fun text(pageIndex: Int): List<PdfTextWord> {
+        val (key, source, sourceIndex) =
+            operation.withLock {
+                val sourceIndex = edits?.current?.pages?.getOrNull(pageIndex)?.sourceIndex
+                if (sourceIndex == null || engine == null) return emptyList()
+                val key = "$version:$sourceIndex"
+                textCache.get(key)?.let { return it }
+                Triple(key, readSnapshot(), sourceIndex)
+            }
+        // Extraction reads the shared snapshot outside the reader lock, so it never delays a render.
+        return source.text(sourceIndex).also { if (!source.isClosed) textCache.put(key, it) }
+    }
+
+    /** Call under [operation]; the shared read copy of the current base, made on first use. */
+    private suspend fun readSnapshot(): PdfFillTargetSource {
+        val source = fillSource ?: PdfFillTargetSource(sessionDir).also { fillSource = it }
+        source.snapshot(base!!)
+        return source
+    }
 
     suspend fun fillTargets(pageIndex: Int): List<PdfFillTarget> {
         val (key, source, sourceIndex) =
@@ -366,9 +461,7 @@ class ReaderViewModel(
                 val key = "$version:$sourceIndex"
                 fillCache.get(key)?.let { return it }
                 // Only the one-time snapshot of the base needs the lock; it can't change meanwhile.
-                val source = fillSource ?: PdfFillTargetSource(sessionDir).also { fillSource = it }
-                source.snapshot(base!!)
-                Triple(key, source, sourceIndex)
+                Triple(key, readSnapshot(), sourceIndex)
             }
         // Detection runs outside the reader lock so it never stalls rendering or edits. A result
         // that raced a base change lands under the old version's key, which is never read again.
@@ -406,6 +499,11 @@ class ReaderViewModel(
         pageId: String,
         id: String,
     ) = edit { it.remove(pageId, id) }
+
+    fun removeAnnotations(
+        pageId: String,
+        ids: Set<String>,
+    ) = edit { it.remove(pageId, ids) }
 
     fun discardChanges() = edit { it.discardChanges() }
 
@@ -595,9 +693,16 @@ class ReaderViewModel(
                 }
                 if (destination == uri) sourceFingerprint = export.file.inputStream().use(::fingerprint)
             }
-            edits!!.markSaved(export.snapshot)
+            if (destination == uri) {
+                edits!!.markSaved(export.snapshot)
+                message = "Saved"
+            } else {
+                // The edits now live in the new file, which the reader switches to. The original
+                // is untouched, so its draft returns to the original's saved state.
+                edits!!.discardChanges()
+                message = null
+            }
             persist()
-            message = "Saved"
         } catch (e: Exception) {
             message = e.message ?: "Save failed. Your draft is retained."
             throw e
@@ -645,6 +750,11 @@ class ReaderViewModel(
         viewModelScope.launch { recentsRepository.updateReadingPosition(documentId, pageIndex, zoomScale, fraction) }
     }
 
+    /**
+     * Renames the document in the app (header, Recents and suggested save names). The file itself
+     * keeps its name: renaming through SAF revokes this app's access to the document on the
+     * built-in providers, which would leave it impossible to reopen or save back to.
+     */
     fun rename(newName: String) =
         launchOperation {
             if (newName.isNotBlank()) {
@@ -652,6 +762,38 @@ class ReaderViewModel(
                 recentsRepository.rename(documentId, displayName)
                 publish()
             }
+        }
+
+    /**
+     * Renames [file], the document's own file in shared storage (requires all-files access), and
+     * returns its new `file://` URI for the caller to move the session to. Null, with a message,
+     * when the file can't be renamed; the name then changes in the app only.
+     */
+    suspend fun renameFile(
+        newName: String,
+        file: File,
+    ): Uri? =
+        operation.withLock {
+            val trimmed = newName.trim()
+            if (trimmed.isBlank()) return@withLock null
+            val fileName = if (trimmed.endsWith(".pdf", ignoreCase = true)) trimmed else "$trimmed.pdf"
+            persist()
+            val target = File(file.parentFile, fileName)
+            val problem =
+                withContext(Dispatchers.IO) {
+                    when {
+                        target.path == file.path -> null
+                        !file.isFile -> "The PDF could not be found in its folder. It was renamed in the app only."
+                        target.exists() -> "A file named “$fileName” is already in that folder. It was renamed in the app only."
+                        !file.renameTo(target) -> "This file could not be renamed. It was renamed in the app only."
+                        else -> null
+                    }
+                }
+            displayName = fileName
+            recentsRepository.rename(documentId, displayName)
+            message = problem
+            publish()
+            if (problem == null && target.path != file.path) Uri.fromFile(target) else null
         }
 
     suspend fun compress(preset: CompressionPreset): CompressionResult {
@@ -689,7 +831,7 @@ class ReaderViewModel(
             if (count > 0) digest.update(buffer, 0, count)
             count = stream.read(buffer)
         }
-        return digest.digest().joinToString("") { "%02x".format(it) }
+        return digest.digest().toHex()
     }
 
     override fun onCleared() {
@@ -730,3 +872,9 @@ class ReaderViewModel(
             ) as T
     }
 }
+
+private const val PREVIEW_WIDTH_PX = 360
+private const val PREVIEW_RADIUS = 8
+private const val PREVIEW_CACHE_BYTES = 24 * 1024 * 1024
+
+private fun ByteArray.toHex(): String = joinToString("") { "%02x".format(it) }

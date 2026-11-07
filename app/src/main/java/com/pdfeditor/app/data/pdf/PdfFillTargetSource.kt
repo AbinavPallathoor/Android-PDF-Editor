@@ -1,6 +1,7 @@
 package com.pdfeditor.app.data.pdf
 
 import com.pdfeditor.app.domain.PdfFillTarget
+import com.pdfeditor.app.domain.PdfTextWord
 import com.tom_roush.pdfbox.pdmodel.PDDocument
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
@@ -9,13 +10,14 @@ import kotlinx.coroutines.withContext
 import java.io.File
 
 /**
- * One private read copy and open PDFBox document shared by every fill-target lookup for a single
- * immutable renderer base, so pages don't each copy and reparse the whole PDF. Lookups serialize
- * on this object's own lock rather than the reader's, so detection never blocks rendering or
+ * One private read copy and open PDFBox document shared by every fill-target and text lookup for a
+ * single immutable renderer base, so pages don't each copy and reparse the whole PDF. Lookups
+ * serialize on this object's own lock rather than the reader's, so they never block rendering or
  * edits. [close] may run while a lookup is in flight: whichever side finishes last releases.
  */
 internal class PdfFillTargetSource(
     private val directory: File,
+    private val textExtractor: (PDDocument, Int) -> List<PdfTextWord> = PdfBoxDocumentContent()::extractText,
     private val detector: suspend (PDDocument, Int) -> List<PdfFillTarget> = PdfBoxFillTargetDetector()::detect,
 ) {
     private val lock = Mutex()
@@ -46,18 +48,28 @@ internal class PdfFillTargetSource(
     }
 
     /** Empty once closed; callers must treat that result as stale rather than cache it. */
-    suspend fun detect(pageIndex: Int): List<PdfFillTarget> =
+    suspend fun detect(pageIndex: Int): List<PdfFillTarget> = read(emptyList()) { detector(it, pageIndex) }
+
+    /** Positioned words on [pageIndex]; empty once closed, like [detect]. */
+    suspend fun text(pageIndex: Int): List<PdfTextWord> = read(emptyList()) { textExtractor(it, pageIndex) }
+
+    val isClosed: Boolean get() = closed
+
+    private suspend fun <T> read(
+        whenClosed: T,
+        block: suspend (PDDocument) -> T,
+    ): T =
         withContext(Dispatchers.IO) {
-            if (closed) return@withContext emptyList()
+            if (closed) return@withContext whenClosed
             lock.lock()
             try {
-                if (closed) return@withContext emptyList()
+                if (closed) return@withContext whenClosed
                 val open =
                     document ?: withContext(NonCancellable) {
-                        PDDocument.load(checkNotNull(copy) { "Fill targets were requested before a snapshot" })
+                        PDDocument.load(checkNotNull(copy) { "The PDF was read before a snapshot" })
                             .also { document = it }
                     }
-                detector(open, pageIndex)
+                block(open)
             } finally {
                 lock.unlock()
                 if (closed) releaseIfIdle()

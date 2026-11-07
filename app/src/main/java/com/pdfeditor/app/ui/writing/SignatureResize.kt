@@ -56,5 +56,9 @@ internal fun resizeSignature(
     val scale = annotation.scale * factor
     val newLeft = if (movesLeft) fixedX - width * factor else fixedX
     val newTop = if (movesTop) fixedY - height * factor else fixedY
-    return annotation.copy(position = PdfPoint(newLeft - minX * scale, newTop - minY * scale), scale = scale)
+    return annotation.copy(
+        position = PdfPoint(newLeft - minX * scale, newTop - minY * scale),
+        scale = scale,
+        strokeWidth = annotation.canonicalStrokeWidth,
+    )
 }

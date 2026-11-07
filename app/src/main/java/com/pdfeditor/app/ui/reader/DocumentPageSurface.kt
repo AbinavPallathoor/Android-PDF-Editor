@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
@@ -58,6 +59,7 @@ import com.pdfeditor.app.ui.writing.ResizeCorner
 import com.pdfeditor.app.ui.writing.annotationSelectionBounds
 import com.pdfeditor.app.ui.writing.clampAnnotationToPage
 import com.pdfeditor.app.ui.writing.hitTestAnnotation
+import com.pdfeditor.app.ui.writing.hitTestAnnotations
 import com.pdfeditor.app.ui.writing.resizeSignature
 import com.pdfeditor.app.ui.writing.resizeTextBox
 import kotlinx.coroutines.withTimeoutOrNull
@@ -93,7 +95,7 @@ internal fun DocumentPageSurface(
     onSelection: (TextSelection?) -> Unit,
     onAdd: (Annotation) -> Unit,
     onReplace: (Annotation) -> Unit,
-    onRemove: (String) -> Unit,
+    onRemove: (Set<String>) -> Unit,
     onText: (PdfPoint) -> Unit,
     onSign: (PdfPoint) -> Unit,
     modifier: Modifier = Modifier,
@@ -109,6 +111,7 @@ internal fun DocumentPageSurface(
     fontAvailable: (String) -> Boolean = { true },
     fillTargets: List<PdfFillTarget> = emptyList(),
     onFillTarget: (PdfFillTarget) -> Unit = {},
+    detail: PageDetail? = null,
 ) {
     val density = LocalDensity.current
     val textMeasurer = rememberTextMeasurer()
@@ -128,7 +131,13 @@ internal fun DocumentPageSurface(
         }
     var widthPx by remember { mutableFloatStateOf(1f) }
     var moving by remember(pageId) { mutableStateOf<Annotation?>(null) }
-    val visibleAnnotations = annotations.map { if (it.id == moving?.id) moving!! else it }
+    // Swept by the eraser in the current gesture: hidden at once, removed together on lift.
+    var erased by remember(pageId) { mutableStateOf(emptySet<String>()) }
+    var eraserAt by remember(pageId) { mutableStateOf<Offset?>(null) }
+    LaunchedEffect(annotations) {
+        if (erased.isNotEmpty()) erased = erased.filterTo(mutableSetOf()) { id -> annotations.any { it.id == id } }
+    }
+    val visibleAnnotations = annotations.filterNot { it.id in erased }.map { if (it.id == moving?.id) moving!! else it }
     var preview by remember(pageId) { mutableStateOf<List<Offset>>(emptyList()) }
     val scale = widthPx / widthPoints
     val currentAnnotations by rememberUpdatedState(annotations)
@@ -155,6 +164,7 @@ internal fun DocumentPageSurface(
         modifier.background(if (invert) Color.Black else Color.White).testTag("pdf-page-$pageIndex")
             .pointerInput(pageId, tool, color, allowAnnotationMove) {
                 awaitEachGesture {
+                    var committedErase = false
                     try {
                         val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
                         if (textBounds?.contains(down.position) == true) {
@@ -171,16 +181,11 @@ internal fun DocumentPageSurface(
                             }
                         val selectedText = resizable as? TextBoxAnnotation
                         val originalBounds = resizable?.let(::boundsFor)
+                        // One bottom-right handle; the rest of the box stays free for moving it.
                         val resizeCorner =
                             if (allowAnnotationMove && !inlineActive && originalBounds != null) {
-                                val b = originalBounds
-                                listOf(
-                                    ResizeCorner.TOP_LEFT to Offset(b.left, b.top),
-                                    ResizeCorner.TOP_RIGHT to Offset(b.right, b.top),
-                                    ResizeCorner.BOTTOM_LEFT to Offset(b.left, b.bottom),
-                                    ResizeCorner.BOTTOM_RIGHT to Offset(b.right, b.bottom),
-                                ).minByOrNull { (_, p) -> (down.position - p * currentScale).getDistance() }
-                                    ?.takeIf { (_, p) -> (down.position - p * currentScale).getDistance() <= 22.dp.toPx() }?.first
+                                val handle = Offset(originalBounds.right, originalBounds.bottom) * currentScale
+                                ResizeCorner.BOTTOM_RIGHT.takeIf { (down.position - handle).getDistance() <= RESIZE_HANDLE_REACH.toPx() }
                             } else {
                                 null
                             }
@@ -217,6 +222,24 @@ internal fun DocumentPageSurface(
                                 (p.x / currentScale).coerceIn(0f, widthPoints),
                                 (p.y / currentScale).coerceAtLeast(0f),
                             )
+
+                        fun eraseAlong(
+                            from: Offset,
+                            to: Offset,
+                        ) {
+                            eraserAt = to
+                            val start = pdf(from)
+                            val end = pdf(to)
+                            val steps = (hypot(end.x - start.x, end.y - start.y) / ERASER_STEP_POINTS).toInt().coerceAtLeast(1)
+                            var hits = erased
+                            for (i in 0..steps) {
+                                val t = i / steps.toFloat()
+                                val point = PdfPoint(start.x + (end.x - start.x) * t, start.y + (end.y - start.y) * t)
+                                hits = hits + hitTestAnnotations(currentAnnotations.filterNot { it.id in hits }, point).map { it.id }
+                            }
+                            erased = hits
+                        }
+                        if (tool == EditorTool.ERASE) eraseAlong(down.position, down.position)
 
                         fun nearest(p: Offset): Int? {
                             val pos = pdf(p)
@@ -292,6 +315,7 @@ internal fun DocumentPageSurface(
                             }
                             val change = event.changes.firstOrNull { it.id == down.id } ?: break
                             val pos = change.position
+                            val segmentStart = last
                             distance += hypot(pos.x - last.x, pos.y - last.y)
                             last = pos
                             if (!multiple) {
@@ -355,6 +379,10 @@ internal fun DocumentPageSurface(
                                         preview = points.toList()
                                         change.consume()
                                     }
+                                    tool == EditorTool.ERASE -> {
+                                        eraseAlong(segmentStart, pos)
+                                        change.consume()
+                                    }
                                     actsOnTap -> change.consume()
                                 }
                             }
@@ -369,6 +397,11 @@ internal fun DocumentPageSurface(
                             }
                         }
                         moving = null
+                        // One swipe, however much it erased, is one undo step.
+                        if (!cancelled && !multiple && erased.isNotEmpty()) {
+                            remove(erased)
+                            committedErase = true
+                        }
                         if (!cancelled && !multiple && !selecting && resizeCorner == null) {
                             when {
                                 drawing && points.size > 1 && distance > viewConfiguration.touchSlop -> {
@@ -386,7 +419,7 @@ internal fun DocumentPageSurface(
                                     when (tool) {
                                         EditorTool.TEXT -> textAction(pdf(down.position))
                                         EditorTool.SIGN -> signAction(pdf(down.position))
-                                        EditorTool.ERASE -> hitTestAnnotation(currentAnnotations, pdf(down.position))?.let { remove(it.id) }
+                                        EditorTool.ERASE -> Unit
                                         EditorTool.HAND -> {
                                             select(null)
                                             val hit =
@@ -416,6 +449,9 @@ internal fun DocumentPageSurface(
                     } finally {
                         moving = null
                         preview = emptyList()
+                        // Committed ids stay hidden until the model drops them (see below).
+                        if (!committedErase) erased = emptySet()
+                        eraserAt = null
                     }
                 }
             },
@@ -432,18 +468,44 @@ internal fun DocumentPageSurface(
                     colorFilter = if (invert) Invert else null,
                 )
             }
+            // A full-resolution render of just the visible part, placed in PDF points so it stays
+            // aligned (if briefly soft) while zoom keeps changing.
+            detail?.let { patch ->
+                Image(
+                    patch.bitmap.asImageBitmap(),
+                    null,
+                    Modifier.offset { IntOffset((patch.region.left * scale).roundToInt(), (patch.region.top * scale).roundToInt()) }
+                        .requiredSize(
+                            with(density) { (patch.region.width() * scale).toDp() },
+                            with(density) { (patch.region.height() * scale).toDp() },
+                        ),
+                    contentScale = ContentScale.FillBounds,
+                    colorFilter = if (invert) Invert else null,
+                )
+            }
             FillTargetHints(fillTargets, scale, invert, onFillTarget)
             Canvas(Modifier.fillMaxSize()) {
                 fun line(
                     points: List<PdfPoint>,
                     c: Color,
                     width: Float,
+                    smooth: Boolean = false,
                 ) {
                     if (points.size < 2) return
                     val path =
                         Path().apply {
                             moveTo(points[0].x * scale, points[0].y * scale)
-                            points.drop(1).forEach { lineTo(it.x * scale, it.y * scale) }
+                            if (smooth && points.size > 2) {
+                                // Curves through segment midpoints, using each sample as the control
+                                // point, so enlarged signatures stay round instead of polygonal.
+                                for (i in 1 until points.lastIndex) {
+                                    val mid = PdfPoint((points[i].x + points[i + 1].x) / 2f, (points[i].y + points[i + 1].y) / 2f)
+                                    quadraticTo(points[i].x * scale, points[i].y * scale, mid.x * scale, mid.y * scale)
+                                }
+                                lineTo(points.last().x * scale, points.last().y * scale)
+                            } else {
+                                points.drop(1).forEach { lineTo(it.x * scale, it.y * scale) }
+                            }
                         }
                     drawPath(path, c, style = Stroke(width * scale, cap = StrokeCap.Round, join = StrokeJoin.Round))
                 }
@@ -460,7 +522,8 @@ internal fun DocumentPageSurface(
                                     )
                                 },
                                 displayed(annotation.colorArgb),
-                                1.5f,
+                                annotation.lineWidthPoints,
+                                smooth = true,
                             )
                         }
                     is HighlightAnnotation ->
@@ -485,6 +548,10 @@ internal fun DocumentPageSurface(
                         displayed(color).copy(alpha = if (tool == EditorTool.HIGHLIGHT).35f else 1f),
                         style = Stroke(if (tool == EditorTool.HIGHLIGHT)14f * scale else 2.5f * scale, cap = StrokeCap.Round),
                     )
+                }
+                eraserAt?.let {
+                    drawCircle(Color.Gray.copy(alpha = .25f), ERASER_CURSOR.toPx(), it)
+                    drawCircle(Color.Gray, ERASER_CURSOR.toPx(), it, style = Stroke(1.dp.toPx()))
                 }
                 selection?.takeIf { it.pageId == pageId }?.let { chosen ->
                     chosen.selected.forEach {
@@ -543,27 +610,16 @@ internal fun DocumentPageSurface(
                                 else -> null
                             }
                         if (handles != null) {
-                            listOf(
-                                "top-left" to Offset(b.left, b.top),
-                                "top-right" to Offset(b.right, b.top),
-                                "bottom-left" to Offset(b.left, b.bottom),
-                                "bottom-right" to Offset(b.right, b.bottom),
-                            ).forEach { (name, corner) ->
-                                val radius = with(density) { 4.dp.toPx() }
-                                val centerX =
-                                    (corner.x * scale + if (name.endsWith("left")) -pad else pad)
-                                        .coerceIn(radius, (widthPx - radius).coerceAtLeast(radius))
-                                val pageHeightPx = with(density) { maxHeight.toPx() }
-                                val centerY =
-                                    (corner.y * scale + if (name.startsWith("top")) -pad else pad)
-                                        .coerceIn(radius, (pageHeightPx - radius).coerceAtLeast(radius))
-                                Box(
-                                    Modifier.offset { IntOffset((centerX - radius).roundToInt(), (centerY - radius).roundToInt()) }
-                                        .size(8.dp).background(if (invert) Color.Black else Color.White, CircleShape)
-                                        .border(1.dp, if (invert) Color.White else Color.Black, CircleShape)
-                                        .testTag("$handles-resize-$name"),
-                                )
-                            }
+                            val radius = with(density) { (RESIZE_HANDLE_SIZE / 2).toPx() }
+                            val centerX = (b.right * scale + pad).coerceIn(radius, (widthPx - radius).coerceAtLeast(radius))
+                            val pageHeightPx = with(density) { maxHeight.toPx() }
+                            val centerY = (b.bottom * scale + pad).coerceIn(radius, (pageHeightPx - radius).coerceAtLeast(radius))
+                            Box(
+                                Modifier.offset { IntOffset((centerX - radius).roundToInt(), (centerY - radius).roundToInt()) }
+                                    .size(RESIZE_HANDLE_SIZE).background(if (invert) Color.Black else Color.White, CircleShape)
+                                    .border(1.5.dp, if (invert) Color.White else Color.Black, CircleShape)
+                                    .testTag("$handles-resize-bottom-right"),
+                            )
                         }
                     }
                 }
@@ -584,3 +640,15 @@ internal fun DocumentPageSurface(
         }
     }
 }
+
+private val RESIZE_HANDLE_SIZE = 14.dp
+
+/** Touch reach around the handle centre; generous since it's the only one. */
+private val RESIZE_HANDLE_REACH = 28.dp
+
+/** Spacing of eraser hit samples along a swipe, in PDF points. */
+private const val ERASER_STEP_POINTS = 3f
+private val ERASER_CURSOR = 12.dp
+
+/** A sharp render of [region] (displayed PDF points) of a page, drawn over its base bitmap. */
+class PageDetail(val bitmap: Bitmap, val region: android.graphics.RectF)

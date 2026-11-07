@@ -68,7 +68,8 @@ annotations; they don't change form-field data or create certificate signatures.
 - Page overview to reorder or delete pages; append a whole PDF or selected pages.
 - Save as a new file, explicitly replace a writable original, or discard all changes.
 - Share the complete annotated PDF with its original text and vectors intact.
-- Rename from the document panel; PDFs shared from other apps are kept as
+- Rename from the document panel (on Android 11+ with All files access, the file
+  itself is renamed); PDFs shared from other apps are kept as
   private imported copies so they stay in Recents.
 
 ## Install
@@ -84,7 +85,13 @@ SHA-256 checksum.
 ## Privacy and storage
 
 The app has no `INTERNET` permission and makes no network calls. Files are
-opened through Android's system file picker, with no broad storage permission.
+opened through Android's system file picker.
+
+On Android 11 and later the app asks once for **All files access**. It is used
+only to rename a PDF's actual file from the document panel; Android revokes an
+app's access to a document it renames through the file picker, so the rename is
+made directly on the file instead. Without it, renaming changes the name inside
+the app only. You can turn it off any time in system settings.
 
 Everything stays on the device:
 

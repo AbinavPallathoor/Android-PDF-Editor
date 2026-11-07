@@ -2,6 +2,7 @@ package com.pdfeditor.app.ui.reader
 
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
+import kotlin.math.pow
 
 /**
  * Pure zoom/pan math for the reading-mode pinch and double-tap gestures, kept free of Compose's
@@ -51,6 +52,54 @@ object ZoomMath {
         val newOffset = (center - tapPoint) * (newScale - 1f)
         return ZoomState(newScale, clampOffset(newOffset, newScale, viewportSize))
     }
+
+    /**
+     * One axis of a pinch about a focal point. Content centred at `center + pan` is scaled by
+     * [ratio] about [focus], so the content under [focus] stays put. Returns the new pan.
+     */
+    fun focalPan(
+        pan: Float,
+        center: Float,
+        focus: Float,
+        ratio: Float,
+    ): Float = focus + (center + pan - focus) * ratio - center
+
+    /**
+     * New top of an item spanning [top] to `top + size`, scaled by [ratio], so the content that
+     * was under [focus] lands at [target]. Focus points outside the item pin its nearest edge.
+     */
+    fun focalTop(
+        top: Float,
+        size: Float,
+        focus: Float,
+        target: Float,
+        ratio: Float,
+    ): Float {
+        val fraction = if (size > 0f) ((focus - top) / size).coerceIn(0f, 1f) else 0f
+        return target - fraction * size * ratio
+    }
+
+    /**
+     * Next zoom for a pinch step of [factor]. With [elastic], pinching past [min]/[max] keeps
+     * going with strong resistance (up to a small overshoot) so the limit is felt rather than hit;
+     * the caller springs back on release. Without it the result is clamped.
+     */
+    fun elasticZoom(
+        current: Float,
+        factor: Float,
+        min: Float,
+        max: Float,
+        elastic: Boolean,
+    ): Float {
+        if (!elastic) return (current * factor).coerceIn(min, max)
+        val pushingOut = (current >= max && factor > 1f) || (current <= min && factor < 1f)
+        val applied = if (pushingOut) factor.pow(OVERSHOOT_RESISTANCE) else factor
+        return (current * applied).coerceIn(min * MIN_OVERSHOOT, max * MAX_OVERSHOOT)
+    }
+
+    private const val OVERSHOOT_RESISTANCE = .3f
+    private const val MIN_OVERSHOOT = .85f
+    private const val MAX_OVERSHOOT = 1.15f
 
     fun clampOffset(
         offset: Offset,

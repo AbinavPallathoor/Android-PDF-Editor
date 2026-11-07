@@ -154,7 +154,7 @@ internal fun SourcePageImportContent(
             ) { Text("Select pages", color = Color.White) }
         }
         LazyVerticalGrid(
-            columns = GridCells.Fixed(3),
+            columns = GridCells.Adaptive(THUMBNAIL_MIN_WIDTH),
             horizontalArrangement = Arrangement.spacedBy(12.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
             modifier = Modifier.weight(1f),
@@ -269,3 +269,6 @@ private class ImportPreview(
         }
     }
 }
+
+/** Three columns on a phone in portrait, more as the window widens (landscape, tablets). */
+private val THUMBNAIL_MIN_WIDTH = 104.dp

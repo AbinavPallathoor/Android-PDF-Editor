@@ -7,13 +7,20 @@ import kotlinx.serialization.Serializable
 object HomeRoute
 
 @Serializable
-data class ReaderRoute(val documentId: Long, val encodedUri: String, val displayName: String) {
+data class ReaderRoute(
+    val documentId: Long,
+    val encodedUri: String,
+    val displayName: String,
+    /** An [OpenOrigin]; kept across header document switches so Back still leaves the app. */
+    val origin: Int = OpenOrigin.IN_APP,
+) {
     companion object {
         fun forDocument(
             documentId: Long,
             uri: Uri,
             displayName: String,
-        ) = ReaderRoute(documentId, Uri.encode(uri.toString()), displayName)
+            origin: Int = OpenOrigin.IN_APP,
+        ) = ReaderRoute(documentId, Uri.encode(uri.toString()), displayName, origin)
     }
 
     val uri: Uri get() = Uri.parse(Uri.decode(encodedUri))

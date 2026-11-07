@@ -69,6 +69,7 @@ internal fun signatureForFillTarget(
         strokes = strokes,
         scale = scale,
         colorArgb = colorArgb,
+        strokeWidth = SignaturePlacement.STROKE_WIDTH,
     )
 }
 

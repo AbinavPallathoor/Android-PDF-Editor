@@ -39,7 +39,10 @@ data class TextBoxAnnotation(
 ) : Annotation
 
 /** [strokes] are stored once in a small canonical box (see `WritingViewModel`) and reused at
- * different [position]s/[scale]s rather than re-drawn each time. */
+ * different [position]s/[scale]s rather than re-drawn each time. [strokeWidth] is in the same
+ * canonical units, so the line thickens and thins with the signature instead of distorting it.
+ * Null is a signature from before widths were stored: it keeps its original fixed line until it
+ * is next resized, when that line is baked in as a canonical width. */
 @Serializable
 data class SignaturePlacement(
     override val id: String,
@@ -47,7 +50,20 @@ data class SignaturePlacement(
     val strokes: List<List<PdfPoint>>,
     val scale: Float,
     val colorArgb: Int,
-) : Annotation
+    val strokeWidth: Float? = null,
+) : Annotation {
+    val canonicalStrokeWidth: Float
+        get() = strokeWidth ?: (LEGACY_SIGNATURE_LINE_POINTS / scale.takeIf { it > 0f && it.isFinite() }.let { it ?: 1f })
+
+    /** Drawn and exported line width, in PDF points. */
+    val lineWidthPoints: Float get() = canonicalStrokeWidth * scale
+
+    companion object {
+        /** Canonical width for new placements: 1.5pt at the default placement scale of 0.65. */
+        const val STROKE_WIDTH = 1.5f / 0.65f
+        const val LEGACY_SIGNATURE_LINE_POINTS = 1.5f
+    }
+}
 
 /** Rectangle in displayed crop-box points: top-left origin, after page rotation. */
 @Serializable

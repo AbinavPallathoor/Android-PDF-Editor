@@ -2,6 +2,7 @@ package com.pdfeditor.app.ui.nav
 
 import android.content.ContentResolver
 import android.net.Uri
+import android.os.Environment
 import com.pdfeditor.app.data.DocumentMetadata
 import com.pdfeditor.app.data.resolveDocumentMetadata
 import com.tom_roush.pdfbox.pdmodel.PDDocument
@@ -22,8 +23,16 @@ internal fun prepareDurableDocument(
     uri: Uri,
     importsDirectory: File,
     ownedProviderAuthority: String? = null,
+    directFileAccess: Boolean = false,
 ): DurableDocument {
     val metadata = resolveDocumentMetadata(resolver, uri)
+    // With all-files access a shared-storage path stays readable across launches (e.g. a file
+    // renamed by this app), so it is used in place rather than copied.
+    if (directFileAccess && uri.scheme == ContentResolver.SCHEME_FILE &&
+        uri.path?.let { File(it) }?.let { isSharedStorageFile(it, Environment.getExternalStorageDirectory()) && it.canRead() } == true
+    ) {
+        return DurableDocument(uri, metadata)
+    }
     val ownedProvider =
         ownedProviderAuthority != null && uri.scheme == ContentResolver.SCHEME_CONTENT && uri.authority == ownedProviderAuthority
     if (ownedProvider || isImportedDocumentUri(uri, importsDirectory) ||
@@ -73,3 +82,17 @@ internal fun isImportedDocumentUri(
         }.getOrDefault(false)
 
 private fun ByteArray.hex(): String = joinToString("") { "%02x".format(it) }
+
+/**
+ * A file in user-visible shared storage, which stays put across launches. App-private and cache
+ * paths (including other apps' `Android/data` folders) are temporary handoffs and get imported.
+ */
+internal fun isSharedStorageFile(
+    file: File,
+    primaryRoot: File,
+): Boolean {
+    val path = runCatching { file.canonicalPath }.getOrNull() ?: return false
+    val roots = listOf(primaryRoot.path.trimEnd('/'), "/storage/emulated/0", "/sdcard")
+    val shared = roots.any { path.startsWith("$it/") } || Regex("^/storage/[0-9A-F]{4}-[0-9A-F]{4}/").containsMatchIn(path)
+    return shared && !path.contains("/Android/data/") && !path.contains("/Android/obb/")
+}

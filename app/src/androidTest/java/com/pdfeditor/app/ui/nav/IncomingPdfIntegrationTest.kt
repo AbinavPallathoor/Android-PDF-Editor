@@ -5,6 +5,7 @@ import android.net.Uri
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.toPixelMap
 import androidx.compose.ui.test.assertContentDescriptionEquals
+import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertTextEquals
@@ -25,6 +26,7 @@ import androidx.compose.ui.test.performTouchInput
 import androidx.core.content.FileProvider
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
+import androidx.lifecycle.Lifecycle
 import androidx.test.platform.app.InstrumentationRegistry
 import androidx.test.runner.lifecycle.ActivityLifecycleMonitorRegistry
 import androidx.test.runner.lifecycle.Stage
@@ -45,6 +47,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotSame
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
@@ -191,6 +194,50 @@ class IncomingPdfIntegrationTest {
     }
 
     @Test
+    fun backFromPdfOpenedByAnotherAppReturnsToThatApp_notHome() {
+        val pdf = createPdf("back-cold", pageCount = 2)
+        launchCold(pdf.uri)
+        awaitPdf(pdf.name, pageCount = 2)
+        val reader = checkNotNull(coldActivity)
+        instrumentation.runOnMainSync { reader.onBackPressedDispatcher.onBackPressed() }
+        composeRule.waitUntil(timeoutMillis = 20_000) {
+            var finishing = false
+            instrumentation.runOnMainSync { finishing = reader.isFinishing || reader.isDestroyed }
+            finishing
+        }
+    }
+
+    @Test
+    fun backFromPdfSentToRunningAppMovesTheAppBehindTheSender() {
+        val pdf = createPdf("back-warm", pageCount = 2)
+        val home = composeRule.activity
+        val harnessIntent = Intent(home.intent)
+        launchWarm(pdf.uri)
+        awaitPdf(pdf.name, pageCount = 2)
+        instrumentation.runOnMainSync { home.onBackPressedDispatcher.onBackPressed() }
+        composeRule.waitUntil(timeoutMillis = 20_000) { resumedActivity() == null }
+        var finishing = true
+        instrumentation.runOnMainSync { finishing = home.isFinishing }
+        assertFalse("The running app stays alive in the background", finishing)
+
+        // Opening the app again later shows Home, not the closed reader.
+        instrumentation.runOnMainSync {
+            context.startActivity(
+                Intent(context, MainActivity::class.java)
+                    .setAction(Intent.ACTION_MAIN)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP),
+            )
+        }
+        composeRule.waitUntil(timeoutMillis = 20_000) { resumedActivity() === home }
+        composeRule.onAllNodesWithTag("page-count").assertCountEquals(0)
+        // ActivityScenario tracks its Activity by the launch Intent that onNewIntent replaced;
+        // restore it and resync the monitor so the rule can close the Activity normally.
+        instrumentation.runOnMainSync { home.intent = harnessIntent }
+        composeRule.activityRule.scenario.moveToState(Lifecycle.State.CREATED)
+        composeRule.activityRule.scenario.moveToState(Lifecycle.State.RESUMED)
+    }
+
+    @Test
     fun normalPdfCanSwitchToDark_andDarkPreferenceSurvivesClosingAndReopening() {
         val pdf = createPdf("colors", pageCount = 4)
         launchCold(pdf.uri)
@@ -199,15 +246,11 @@ class IncomingPdfIntegrationTest {
 
         composeRule.onNodeWithTag("invert-toggle").performClick()
         awaitColorMode("Dark PDF")
-        revealChrome()
-        composeRule.onNodeWithTag("close-document").performClick()
-        composeRule.waitUntil(timeoutMillis = 20_000) {
-            composeRule.onAllNodesWithTag("page-count").fetchSemanticsNodes().isEmpty()
-        }
+        closeToCallingApp()
 
-        // Closing removes the reader's back-stack entry and ViewModel. Reopening must load
-        // the persisted preference from the document session, not retain a live UI toggle.
-        launchWarm(pdf.uri)
+        // Closing finishes the Activity and its ViewModel. Reopening must load the persisted
+        // preference from the document session, not retain a live UI toggle.
+        launchCold(pdf.uri)
         awaitPdf(pdf.name, pageCount = 4)
         awaitColorMode("Dark PDF")
         composeRule.onNodeWithTag("invert-toggle").assertContentDescriptionEquals("Dark PDF")
@@ -379,24 +422,33 @@ class IncomingPdfIntegrationTest {
         pdf: PdfFixture,
         pageCount: Int,
     ) {
-        revealChrome()
-        composeRule.onNodeWithTag("close-document").performClick()
-        composeRule.waitUntil(timeoutMillis = 20_000) {
-            composeRule.onAllNodesWithTag("page-count").fetchSemanticsNodes().isEmpty()
-        }
-        launchWarm(pdf.uri)
+        closeToCallingApp()
+        launchCold(pdf.uri)
         awaitPdf(pdf.name, pageCount)
     }
 
+    /** A PDF another app opened returns to that app on close: its Activity finishes. */
+    private fun closeToCallingApp() {
+        val reader = checkNotNull(coldActivity)
+        revealChrome()
+        composeRule.onNodeWithTag("close-document").performClick()
+        composeRule.waitUntil(timeoutMillis = 20_000) {
+            var finishing = false
+            instrumentation.runOnMainSync { finishing = reader.isFinishing || reader.isDestroyed }
+            finishing
+        }
+    }
+
     private fun launchCold(uri: Uri) {
-        val launcher = composeRule.activity
+        // The launcher may already be gone: closing a cold reader finishes its Activity.
+        val previous = resumedActivity()
         instrumentation.runOnMainSync {
-            launcher.startActivity(
+            context.startActivity(
                 viewIntent(uri).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK),
             )
         }
         composeRule.waitUntil(timeoutMillis = 20_000) {
-            resumedActivity()?.let { it !== launcher && it.intent.data == uri } == true
+            resumedActivity()?.let { it !== previous && it.intent.data == uri } == true
         }
         coldActivity = checkNotNull(resumedActivity())
     }

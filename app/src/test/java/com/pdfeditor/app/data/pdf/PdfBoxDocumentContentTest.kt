@@ -308,4 +308,47 @@ class PdfBoxDocumentContentTest {
         }
         return source
     }
+
+    // Catches a fresh import skipping the clean-base rewrite for a PDF that has app-owned marks.
+    @Test fun inspectReportsOwnedAnnotationsAndPageCountFromOneParse() =
+        runTest {
+            val source = fixture()
+            val plain = content.inspect(source)
+            assertEquals(3, plain.pageCount)
+            assertFalse("a foreign note is not app-owned", plain.hasOwnedAnnotations)
+            assertTrue(plain.annotations.isEmpty())
+            val stroke = DrawStroke("ink", listOf(PdfPoint(20f, 30f), PdfPoint(50f, 60f)), -1, 2f)
+            val saved = content.writeAnnotations(source, File(temporary.root, "owned.pdf"), mapOf(1 to listOf(stroke)))
+            val owned = content.inspect(saved)
+            assertTrue(owned.hasOwnedAnnotations)
+            assertEquals(mapOf(1 to listOf(stroke)), owned.annotations)
+            assertEquals(3, owned.pageCount)
+        }
+
+    // Catches a signature exported with a fixed line, which looks distorted once resized.
+    @Test fun signatureLineWidthFollowsItsScale() =
+        runTest {
+            suspend fun exportedWidth(scale: Float): Float {
+                val sign =
+                    SignaturePlacement(
+                        "sign",
+                        PdfPoint(80f, 120f),
+                        listOf(listOf(PdfPoint(0f, 0f), PdfPoint(20f, 10f))),
+                        scale,
+                        -16777216,
+                        strokeWidth = 1.5f,
+                    )
+                val saved = content.writeAnnotations(fixture(), File(temporary.root, "sign-$scale.pdf"), mapOf(0 to listOf(sign)))
+                return PDDocument.load(saved).use { doc ->
+                    val annotation = doc.getPage(0).annotations.first { it.subtype == "Ink" }
+                    val parser = PDFStreamParser(annotation.normalAppearanceStream)
+                    parser.parse()
+                    val tokens = parser.tokens
+                    val index = tokens.indexOfFirst { it is Operator && it.name == "w" }
+                    (tokens[index - 1] as COSNumber).floatValue()
+                }
+            }
+            assertEquals(1.5f, exportedWidth(1f), .001f)
+            assertEquals(3f, exportedWidth(2f), .001f)
+        }
 }

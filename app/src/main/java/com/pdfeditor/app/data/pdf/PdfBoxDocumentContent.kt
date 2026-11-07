@@ -42,38 +42,56 @@ import kotlin.math.hypot
  * rotation, in points, with a top-left origin. No PdfRenderer may hold this source open.
  */
 class PdfBoxDocumentContent(private val fontRepository: FontRepository? = null) {
-    suspend fun readAnnotations(source: File): Map<Int, List<Annotation>> =
+    /** What a fresh import needs from [source], from a single parse. */
+    data class Inspection(
+        val annotations: Map<Int, List<Annotation>>,
+        val pageCount: Int,
+        /** False means the file holds no app-owned marks, so it can serve as a clean base as-is. */
+        val hasOwnedAnnotations: Boolean,
+    )
+
+    suspend fun inspect(source: File): Inspection =
         withContext(Dispatchers.IO) {
             PDDocument.load(source).use { document ->
-                buildMap {
-                    document.pages.forEachIndexed { index, page ->
-                        val models =
-                            page.annotations.mapNotNull { annotation ->
-                                annotation.cosObject.getString(MODEL_KEY)?.let { encoded ->
-                                    Json.decodeFromString<Annotation>(encoded).also { model ->
-                                        if (model is TextBoxAnnotation && FontRepository.isCustom(model.fontId)) {
-                                            val repository = fontRepository
-                                            if (repository != null && !repository.contains(model.fontId)) {
-                                                val font = annotation.normalAppearanceStream?.resources?.getFont(FONT_RESOURCE)
-                                                val embedded = font?.fontDescriptor?.fontFile2
-                                                requireNotNull(embedded) {
-                                                    "This PDF is missing its editable font. Import the original font again."
-                                                }
-                                                embedded.createInputStream().use {
-                                                    repository.recoverFont(
-                                                        model.fontId,
-                                                        it,
-                                                        annotation.cosObject.getString(FONT_NAME_KEY) ?: "Recovered font",
-                                                    )
-                                                }
-                                            }
+                Inspection(
+                    readModels(document),
+                    document.numberOfPages,
+                    document.pages.any { page -> page.annotations.any { it.cosObject.containsKey(MODEL_KEY) } },
+                )
+            }
+        }
+
+    suspend fun readAnnotations(source: File): Map<Int, List<Annotation>> =
+        withContext(Dispatchers.IO) { PDDocument.load(source).use(::readModels) }
+
+    private fun readModels(document: PDDocument): Map<Int, List<Annotation>> =
+        buildMap {
+            document.pages.forEachIndexed { index, page ->
+                val models =
+                    page.annotations.mapNotNull { annotation ->
+                        annotation.cosObject.getString(MODEL_KEY)?.let { encoded ->
+                            Json.decodeFromString<Annotation>(encoded).also { model ->
+                                if (model is TextBoxAnnotation && FontRepository.isCustom(model.fontId)) {
+                                    val repository = fontRepository
+                                    if (repository != null && !repository.contains(model.fontId)) {
+                                        val font = annotation.normalAppearanceStream?.resources?.getFont(FONT_RESOURCE)
+                                        val embedded = font?.fontDescriptor?.fontFile2
+                                        requireNotNull(embedded) {
+                                            "This PDF is missing its editable font. Import the original font again."
+                                        }
+                                        embedded.createInputStream().use {
+                                            repository.recoverFont(
+                                                model.fontId,
+                                                it,
+                                                annotation.cosObject.getString(FONT_NAME_KEY) ?: "Recovered font",
+                                            )
                                         }
                                     }
                                 }
                             }
-                        if (models.isNotEmpty()) put(index, models)
+                        }
                     }
-                }
+                if (models.isNotEmpty()) put(index, models)
             }
         }
 
@@ -195,7 +213,12 @@ class PdfBoxDocumentContent(private val fontRepository: FontRepository? = null) 
                     }
                 else -> emptyList()
             }
-        val width = if (model is DrawStroke) model.strokeWidthPoints else 1.5f
+        val width =
+            when (model) {
+                is DrawStroke -> model.strokeWidthPoints
+                is SignaturePlacement -> model.lineWidthPoints
+                else -> 1.5f
+            }
         val displayedBounds =
             when (model) {
                 is DrawStroke, is SignaturePlacement -> paths.flatten().ifEmpty { listOf(PdfPoint(0f, 0f)) }.bounds().expanded(width)

@@ -7,6 +7,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.compose.ui.graphics.toPixelMap
 import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.semantics.SemanticsProperties
@@ -17,6 +18,7 @@ import androidx.compose.ui.test.assertIsNotSelected
 import androidx.compose.ui.test.assertIsSelected
 import androidx.compose.ui.test.captureToImage
 import androidx.compose.ui.test.getUnclippedBoundsInRoot
+import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.longClick
@@ -38,6 +40,7 @@ import androidx.compose.ui.unit.dp
 import com.pdfeditor.app.domain.DocumentEdits
 import com.pdfeditor.app.domain.DocumentPage
 import com.pdfeditor.app.domain.DocumentSnapshot
+import com.pdfeditor.app.domain.DrawStroke
 import com.pdfeditor.app.domain.PdfPoint
 import com.pdfeditor.app.domain.PdfRect
 import com.pdfeditor.app.domain.PdfTextWord
@@ -62,12 +65,16 @@ class MultipageEditorTest {
             dirty = doc.isDirty, canUndo = doc.canUndo, canRedo = doc.canRedo, canSaveOriginal = true,
         )
 
-    private fun launch(height: Dp? = null) {
+    private fun launch(
+        height: Dp? = null,
+        render: (suspend (Int, Int, Int) -> Bitmap?)? = null,
+        renderRegion: suspend (Int, android.graphics.RectF, Int, Int) -> Bitmap? = { _, _, _, _ -> null },
+    ) {
         val bitmap = Bitmap.createBitmap(306, 396, Bitmap.Config.ARGB_8888).apply { eraseColor(android.graphics.Color.WHITE) }
         compose.setContent {
             PdfEditorTheme {
                 ReaderScreen(
-                    ui, { _, _, _ -> bitmap }, {
+                    ui, render ?: { _, _, _ -> bitmap }, {
                         listOf(PdfTextWord("Hello ", PdfRect(40f, 40f, 100f, 60f)), PdfTextWord("world", PdfRect(102f, 40f, 160f, 60f)))
                     },
                     { _, _, _ -> }, {}, {}, { saveCopy = it },
@@ -104,6 +111,11 @@ class MultipageEditorTest {
                         doc.discardChanges()
                         ui = ready()
                     },
+                    onRemoveAnnotations = { id, ids ->
+                        doc.remove(id, ids)
+                        ui = ready()
+                    },
+                    renderRegion = renderRegion,
                     onEditText = { pageId, annotation, session ->
                         doc.editText(pageId, annotation, session)
                         ui = ready().copy(paged = ui.paged, invertColors = ui.invertColors)
@@ -398,6 +410,9 @@ class MultipageEditorTest {
         compose.onNodeWithTag("tool-HAND").assertIsSelected()
         compose.onNodeWithTag("tool-DRAW").assertIsNotSelected()
         compose.onNodeWithTag("ink-colors").assertDoesNotExist()
+        // Hand has no ink; colours belong to the drawing tools.
+        compose.onNodeWithTag("ink-options").assertDoesNotExist()
+        compose.onNodeWithTag("tool-DRAW").performClick()
         compose.onNodeWithTag("ink-options").performClick()
         compose.onNodeWithTag("ink-colors").assertIsDisplayed()
         compose.onNodeWithTag("ink-color-2").performClick()
@@ -736,5 +751,175 @@ class MultipageEditorTest {
         compose.mainClock.advanceTimeBy(100)
         compose.runOnIdle { assertTrue(doc.current.annotations.isEmpty()) }
         compose.onNodeWithTag("zoom-label").assert(hasText("100%").not())
+    }
+
+    /** Left 40% red, the rest blue, so a sampled pixel shows which part of the page is on screen. */
+    private fun splitBitmap() =
+        Bitmap.createBitmap(300, 388, Bitmap.Config.ARGB_8888).apply {
+            eraseColor(android.graphics.Color.BLUE)
+            for (x in 0 until 120) for (y in 0 until height) setPixel(x, y, android.graphics.Color.RED)
+        }
+
+    private fun pinchOut(
+        centerX: Float,
+        y: Float,
+        from: Float = 100f,
+        to: Float = 200f,
+    ) = compose.onNodeWithTag("document-surface").performTouchInput {
+        down(0, Offset(centerX - from, y))
+        down(1, Offset(centerX + from, y))
+        for (i in 1..10) {
+            val half = from + (to - from) * i / 10f
+            moveTo(0, Offset(centerX - half, y))
+            moveTo(1, Offset(centerX + half, y))
+            advanceEventTime(16)
+        }
+        up(0)
+        up(1)
+    }
+
+    private fun pixelAt(
+        x: Float,
+        y: Float,
+    ): Int {
+        val image = compose.onNodeWithTag("document-surface").captureToImage().asAndroidBitmap()
+        return image.getPixel(x.toInt().coerceIn(0, image.width - 1), y.toInt().coerceIn(0, image.height - 1))
+    }
+
+    // Catches the page going blank (white) while the sharper render for the new zoom is pending.
+    @Test fun pinchKeepsShowingThePageWhileTheSharperRenderIsPending() {
+        val split = splitBitmap()
+        var firstWidth = -1
+        launch(
+            render = { _, width, _ ->
+                if (firstWidth < 0) firstWidth = width
+                // Renders at any other size never finish, like a slow page mid-zoom.
+                if (width == firstWidth) split else kotlinx.coroutines.awaitCancellation()
+            },
+        )
+        compose.waitUntil(10_000) { firstWidth > 0 }
+        var surfaceWidth = 0f
+        var surfaceHeight = 0f
+        compose.onNodeWithTag("document-surface").performTouchInput {
+            surfaceWidth = width.toFloat()
+            surfaceHeight = height.toFloat()
+        }
+        val x = surfaceWidth * .2f
+        val y = surfaceHeight * .3f
+        pinchOut(x + 100f, y)
+        compose.mainClock.advanceTimeBy(500)
+        compose.waitForIdle()
+        val pixel = pixelAt(x, y)
+        assertTrue(
+            "The page must stay visible while re-rendering, got #${Integer.toHexString(pixel)}",
+            pixel != android.graphics.Color.WHITE,
+        )
+    }
+
+    // Catches zooming about the page centre instead of the midpoint between the fingers.
+    @Test fun pinchZoomsAboutTheMidpointOfTheFingers() {
+        val split = splitBitmap()
+        launch(render = { _, _, _ -> split })
+        var surfaceWidth = 0f
+        var surfaceHeight = 0f
+        compose.onNodeWithTag("document-surface").performTouchInput {
+            surfaceWidth = width.toFloat()
+            surfaceHeight = height.toFloat()
+        }
+        // Just inside the red part (which ends at 40% of the width). Zooming about the centre
+        // would carry this point's content outward and put blue under the fingers.
+        val focusX = surfaceWidth * .34f
+        val y = surfaceHeight * .3f
+        assertEquals(android.graphics.Color.RED, pixelAt(focusX, y))
+        pinchOut(focusX, y)
+        compose.mainClock.advanceTimeBy(500)
+        compose.waitForIdle()
+        compose.onNodeWithTag("zoom-label").assert(hasText("100%").not())
+        assertEquals(android.graphics.Color.RED, pixelAt(focusX, y))
+    }
+
+    // Catches an eraser that only removes on tap, or that needs one undo per erased mark.
+    @Test fun eraserSwipeRemovesEverythingItTouchesAndOneUndoRestoresIt() {
+        doc.add("p0", DrawStroke("upper", listOf(PdfPoint(100f, 100f), PdfPoint(300f, 100f)), -16777216, 2.5f))
+        doc.add("p0", DrawStroke("lower", listOf(PdfPoint(100f, 200f), PdfPoint(300f, 200f)), -16777216, 2.5f))
+        doc.add("p0", DrawStroke("away", listOf(PdfPoint(450f, 400f), PdfPoint(550f, 400f)), -16777216, 2.5f))
+        ui = ready()
+        launch()
+        enterEditing()
+        compose.onNodeWithTag("tool-ERASE").performClick()
+        compose.onNodeWithTag("pdf-page-0").performTouchInput {
+            val scale = width / 612f
+            down(Offset(200f * scale, 80f * scale))
+            moveTo(Offset(200f * scale, 150f * scale), 120)
+            moveTo(Offset(200f * scale, 220f * scale), 120)
+            up()
+        }
+        compose.runOnIdle { assertEquals(listOf("away"), doc.annotationsAt(0).map { it.id }) }
+        compose.onNodeWithTag("undo").performClick()
+        compose.runOnIdle { assertEquals(listOf("upper", "lower", "away"), doc.annotationsAt(0).map { it.id }) }
+    }
+
+    // Catches extra corner handles that make the box hard to grab and move.
+    @Test fun selectedSignatureShowsOnlyTheBottomRightHandle() {
+        doc.add("p0", SignaturePlacement("sig", PdfPoint(40f, 40f), listOf(listOf(PdfPoint(0f, 0f), PdfPoint(80f, 40f))), 1f, -16777216))
+        ui = ready()
+        launch()
+        enterEditing()
+        compose.onNodeWithTag("tool-HAND").performClick()
+        compose.onNodeWithTag("pdf-page-0").performTouchInput {
+            val scale = width / 612f
+            down(Offset(60f * scale, 50f * scale))
+            up()
+        }
+        compose.onNodeWithTag("signature-resize-bottom-right").assertIsDisplayed()
+        listOf("top-left", "top-right", "bottom-left").forEach {
+            compose.onNodeWithTag("signature-resize-$it").assertDoesNotExist()
+        }
+    }
+
+    // Catches deep zoom staying soft: past the whole-page size cap the visible part must be
+    // re-rendered on its own at screen resolution and drawn over the page.
+    @Test fun deepZoomDrawsASharpRenderOfTheVisiblePart() {
+        val blurry = Bitmap.createBitmap(300, 388, Bitmap.Config.ARGB_8888).apply { eraseColor(android.graphics.Color.RED) }
+        var requested: android.graphics.RectF? = null
+        launch(
+            render = { _, _, _ -> blurry },
+            renderRegion = { _, region, width, height ->
+                requested = region
+                Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888).apply { eraseColor(android.graphics.Color.GREEN) }
+            },
+        )
+        var surfaceWidth = 0f
+        var surfaceHeight = 0f
+        compose.onNodeWithTag("document-surface").performTouchInput {
+            surfaceWidth = width.toFloat()
+            surfaceHeight = height.toFloat()
+        }
+        val x = surfaceWidth / 2f
+        val y = surfaceHeight * .3f
+        // 1x -> 3x: the page becomes wider than any whole-page render.
+        pinchOut(x, y, from = 80f, to = 240f)
+        compose.mainClock.advanceTimeBy(1_000)
+        compose.waitUntil(5_000) { requested != null }
+        compose.waitForIdle()
+        val region = requireNotNull(requested)
+        assertTrue("Only part of the page is rendered, in page points", region.width() < 612f && region.left >= 0f)
+        assertEquals(android.graphics.Color.GREEN, pixelAt(x, y))
+    }
+
+    // Catches pinching past the maximum zoom staying there instead of settling back at the limit.
+    @Test fun pinchPastMaximumZoomSpringsBackToTheLimit() {
+        launch()
+        var surfaceWidth = 0f
+        var surfaceHeight = 0f
+        compose.onNodeWithTag("document-surface").performTouchInput {
+            surfaceWidth = width.toFloat()
+            surfaceHeight = height.toFloat()
+        }
+        // Far more than the 5x limit (12x of finger spread).
+        pinchOut(surfaceWidth / 2f, surfaceHeight * .4f, from = 30f, to = 360f)
+        compose.waitUntil(3_000) {
+            compose.onAllNodes(hasTestTag("zoom-label") and hasText("500%")).fetchSemanticsNodes().isNotEmpty()
+        }
     }
 }

@@ -100,11 +100,20 @@ class TemporaryPdfRecentIntegrationTest {
         compose.waitUntil(timeoutMillis = 30_000) {
             compose.onAllNodesWithTag("pdf-page-0").fetchSemanticsNodes().isNotEmpty()
         }
+        // A PDF sent from another app returns there on close; the next launch shows Home.
         compose.onNodeWithTag("close-document").performClick()
+        // The app moves behind the sender, so it has no visible Compose hierarchy until relaunched.
         compose.waitUntil(timeoutMillis = 20_000) {
-            compose.onAllNodesWithTag("pdf-page-0").fetchSemanticsNodes().isEmpty() &&
-                compose.onAllNodesWithText(name).fetchSemanticsNodes().isNotEmpty()
+            !compose.activityRule.scenario.state.isAtLeast(Lifecycle.State.RESUMED)
         }
+        instrumentation.runOnMainSync {
+            context.startActivity(
+                Intent(context, MainActivity::class.java)
+                    .setAction(Intent.ACTION_MAIN)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP),
+            )
+        }
+        compose.waitUntil(timeoutMillis = 20_000) { compose.onAllNodesWithText(name).fetchSemanticsNodes().isNotEmpty() }
         compose.onNodeWithText(name).performClick()
         compose.waitUntil(timeoutMillis = 30_000) {
             compose.onAllNodesWithTag("pdf-page-0").fetchSemanticsNodes().isNotEmpty()

@@ -47,6 +47,12 @@ interface RecentDocumentDao {
         displayName: String,
     )
 
+    @Query("UPDATE recent_documents SET uri = :uri WHERE id = :id")
+    suspend fun updateUri(
+        id: Long,
+        uri: String,
+    )
+
     @Query("UPDATE recent_documents SET isPinned = :isPinned WHERE id = :id")
     suspend fun setPinned(
         id: Long,

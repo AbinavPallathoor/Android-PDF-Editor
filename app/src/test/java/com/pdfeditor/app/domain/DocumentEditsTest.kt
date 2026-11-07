@@ -195,4 +195,18 @@ class DocumentEditsTest {
         assertFalse(doc.isDirty)
         assertFalse(doc.canUndo)
     }
+
+    // Catches a swipe-erase leaving partial history or one undo step per erased mark.
+    @Test fun `removing several annotations at once is one undo step`() {
+        val doc = document()
+        val b = a.copy(id = "b")
+        val c = a.copy(id = "c")
+        doc.add("p0", a)
+        doc.add("p0", b)
+        doc.add("p0", c)
+        doc.remove("p0", setOf("a", "c"))
+        assertEquals(listOf("b"), doc.annotationsAt(0).map { it.id })
+        doc.undo()
+        assertEquals(listOf("a", "b", "c"), doc.annotationsAt(0).map { it.id })
+    }
 }

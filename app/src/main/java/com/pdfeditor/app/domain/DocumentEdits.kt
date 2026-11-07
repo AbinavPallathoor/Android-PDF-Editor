@@ -73,6 +73,16 @@ class DocumentEdits(initial: DocumentSnapshot, saved: DocumentSnapshot = initial
         updateAnnotations(pageId, current.annotations[pageId].orEmpty().filterNot { it.id == id })
     }
 
+    /** Removes every annotation in [ids] from one page as a single undo step. */
+    fun remove(
+        pageId: String,
+        ids: Set<String>,
+    ) {
+        requirePage(pageId)
+        if (ids.isEmpty()) return
+        updateAnnotations(pageId, current.annotations[pageId].orEmpty().filterNot { it.id in ids })
+    }
+
     /** Live typing is durable on each update, while one typing session forms one undo step. */
     fun editText(
         pageId: String,

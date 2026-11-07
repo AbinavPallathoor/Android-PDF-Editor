@@ -20,6 +20,12 @@ fun hitTestAnnotation(
     point: PdfPoint,
 ): Annotation? = annotations.lastOrNull { annotation -> isHit(annotation, point) }
 
+/** Every annotation under [point], for erasing whatever a finger slides across. */
+fun hitTestAnnotations(
+    annotations: List<Annotation>,
+    point: PdfPoint,
+): List<Annotation> = annotations.filter { annotation -> isHit(annotation, point) }
+
 private fun isHit(
     annotation: Annotation,
     point: PdfPoint,

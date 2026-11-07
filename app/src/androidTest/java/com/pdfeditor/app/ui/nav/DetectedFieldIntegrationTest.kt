@@ -125,8 +125,17 @@ class DetectedFieldIntegrationTest {
         assertTrue(saved.position.x >= 80f && saved.position.x + requireNotNull(saved.widthPoints) <= 320f)
         val savedBytes = file.readBytes()
         compose.onNodeWithContentDescription("Finish editing").performClick()
+        // Back returns to the app that opened the PDF; relaunching the app shows Home.
         instrumentation.runOnMainSync { coldActivity?.onBackPressedDispatcher?.onBackPressed() }
-        compose.waitUntil(20_000) { compose.onAllNodesWithTag("pdf-page-0").fetchSemanticsNodes().isEmpty() }
+        compose.waitUntil(20_000) { coldActivity?.let { it.isFinishing || it.isDestroyed } == true }
+        instrumentation.runOnMainSync {
+            context.startActivity(
+                Intent(context, MainActivity::class.java)
+                    .setAction(Intent.ACTION_MAIN)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK),
+            )
+        }
+        compose.waitUntil(20_000) { compose.onAllNodesWithText(file.name).fetchSemanticsNodes().isNotEmpty() }
         compose.onAllNodesWithText(file.name)[0].performClick()
         compose.waitUntil(30_000) { compose.onAllNodesWithTag("pdf-page-0").fetchSemanticsNodes().isNotEmpty() }
         compose.onNodeWithTag("toggle-editing").performClick()

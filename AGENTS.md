@@ -119,6 +119,77 @@ them and displaying all types are not supported. Do not claim OCR, arbitrary
 Unicode shaping, physical-device validation or API 26 runtime coverage from an
 API 35 emulator pass. Keep README limits and validation evidence accurate.
 
+Zoom (November 2026): `zoom` drives layout every frame, while page renders follow
+`renderZoom`, which trails it by 120ms of no change, so a pinch triggers no renders.
+A page's bitmap is keyed on page ID and document version only, never on render size:
+a new render replaces it only once ready, so the old one stretches meanwhile and a page
+never flashes white. Pages composed mid-zoom start from
+`ReaderViewModel.cachedPage` (the largest in-memory render at any size, else a 360px
+preview that `prefetchPreviews` keeps for ±8 pages around the reader). A pinch scales
+about the finger midpoint (`ZoomMath.focalPan`/`focalTop`). In scroll mode that is a
+`LazyListState.requestScrollToItem` re-anchor applied in the same layout pass as the
+new page heights, never a per-frame coroutine. Zoomed one-finger pans fling, and a
+Hand double-tap animates 1x/2.5x about the tap. Pinching past 0.25x/5x continues with
+resistance (`ZoomMath.elasticZoom`, at most 15% past the limit) and springs back to the
+limit about the lifted fingers. All of this stays in the single surface
+`awaitEachGesture` loop. Whole-page renders stay capped at 2048px wide, because the
+bitmap budget is `memoryClass / 6`. Beyond that, each page tracks its on-screen part
+(clipped `onGloballyPositioned` bounds, kept out of composition). After 150ms of no
+change it renders just that region at screen resolution (`ReaderViewModel.renderRegion`,
+uncached) as a `PageDetail` drawn over the base bitmap. The patch is positioned in PDF
+points, so it stays aligned while zoom keeps changing.
+
+Opening (November 2026): a fresh import copies the source through a
+`DigestInputStream`, so copying and hashing take one read, and parses it once
+(`PdfBoxDocumentContent.inspect`). When the PDF has no app-owned annotations, the
+imported bytes become the clean base directly, with no PDFBox rewrite. The source is
+hashed up front only when a draft exists to compare against. Text extraction shares
+`PdfFillTargetSource`'s single read snapshot outside the reader lock and starts only
+after a page has painted. Both used to delay rendering. Measured on the API 35
+emulator with a 300-page PDF (debug build): import 2.6s → 0.4–1.0s, first page
+4.7s → 2.5s. Most of the remainder is first composition of the reader in an
+unminified build.
+
+Saving and naming: the save-as suggestion uses the live display name. After save-as,
+the reader switches to the new file: it takes a persistable grant and opens it through
+NavGraph's normal `open()`, so it lands in Recents. The original's draft is reset to its
+saved state, since the edits now live in the copy. A NavGraph-level notice names the
+destination folder (`describeDocumentLocation`, including plain shared-storage paths).
+
+Rename (November 2026, user sign-off to relax the no-broad-storage rule): renaming
+through SAF (`DocumentsContract.renameDocument`) was built and tested on API 35 and
+fails. It renames the file on both the externalstorage and downloads providers, but
+revokes this app's access to the document, so it can't be reopened or saved back to.
+Instead the app holds `MANAGE_EXTERNAL_STORAGE` (Android 11+). It is requested once on
+the first launcher start (`MainActivity.askForAllFilesAccessOnce`) and again, straight
+to the settings page, when renaming without it. `resolveDocumentFile` maps the document
+URI to its shared-storage file. `ReaderViewModel.renameFile` renames it in place, never
+over an existing file. NavGraph then moves the session (`migrateImportedDraft`), repoints
+Recents (`RecentsRepository.updateUri`) and reopens the document by `file://` path, which
+`prepareDurableDocument` accepts directly while access is held. On Android 8–10,
+without access, or for providers with no file behind them (cloud, other apps), rename is
+app-only. `PdfEditorTestRunner` marks the first-launch request as asked so UI tests stay
+in the app.
+
+Back: `OpenDocumentRequest.origin`/`ReaderRoute.origin` records whether a reader came
+from inside the app, from a cold VIEW/SEND launch (Back finishes the Activity, returning
+to the sender) or from a warm `onNewIntent` (Back pops to Home and `moveTaskToBack`).
+Header document switches keep the origin.
+
+Editing details: Erase removes every app-made object a finger sweeps across. Swept
+objects hide at once and are removed together on lift as one undo step
+(`DocumentEdits.remove(pageId, ids)`). Text boxes and signatures have a single
+bottom-right resize handle (28dp reach), so the rest of the box moves it.
+`SignaturePlacement.strokeWidth` is in canonical signature units, so the line scales
+with the signature. Legacy `null` widths keep the old fixed 1.5pt until first resized,
+when that width is baked in. Signature ink draws as midpoint quadratic curves.
+
+Landscape: the document surface, header row and editing tray pad for horizontal
+`safeDrawing` insets (side nav bar/cutout). The tray and expanded panel cap at 560dp.
+Bottom overlays sit above the measured tray (`aboveTray`), not fixed offsets. Page
+grids use `GridCells.Adaptive`. Scroll mode re-anchors to the same page and fraction
+when the viewport width changes (`ReadingAnchor`).
+
 The milestone testing notes below are historical; the current design above
 supersedes their single-page writing, gesture-only entry, and flatten-only save
 behaviour. Legacy WritingScreen/gesture helpers remain for compatibility but are
@@ -148,7 +219,9 @@ not reached by document navigation.
   `PdfEditorApplication` is enough at this scale; revisit only if the graph
   grows meaningfully more complex.
 - Storage Access Framework (`ACTION_OPEN_DOCUMENT`, persisted URI
-  permissions) for opening files. No broad storage permissions.
+  permissions) for opening files. The only broad permission is All files access
+  (`MANAGE_EXTERNAL_STORAGE`), used solely to rename a document's real file; see
+  "Rename" above. Don't widen its use without the user's sign-off.
 - Room for the recents list.
 - PDF rendering (reading mode): platform `android.graphics.pdf.PdfRenderer`,
   wrapped behind the `PdfDocumentRenderer` domain interface. A PDFium binding
@@ -273,8 +346,9 @@ adding form-filling/encryption support later without a rewrite.
   a true "smart" invert that preserves photos/images.** True per-content
   smart invert (à la iOS) needs to distinguish image regions from
   text/vector content, which isn't available from `PdfRenderer`'s flat
-  rasterized bitmap output. Documented simplification, on by default per the
-  brief; revisit only if a real need for image-preserving invert shows up.
+  rasterized bitmap output. Documented simplification; off by default (normal
+  PDF colours) and remembered per document. Revisit only if a real need for
+  image-preserving invert shows up.
 - **PdfBox-Android is the biggest APK-size risk** (it bundles font/metrics
   assets loaded by runtime string path, which R8 can't shrink). Milestone 1's
   spike measured a release build (minify + resource shrinking on) with just
