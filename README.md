@@ -78,9 +78,15 @@ annotations; they don't change form-field data or create certificate signatures.
    [latest release](https://github.com/AbinavPallathoor/Android-PDF-Editor/releases/latest).
 2. Open it on your phone and allow installing from that source when prompted.
 
-Every release is signed with the same key, so new versions install over older
-ones and keep your recents, drafts and signatures. Each release lists the APK's
+Releases are signed with the same key, so new versions install over older ones
+and keep your recents, drafts and signatures. Each release lists the APK's
 SHA-256 checksum.
+
+**Upgrading from 0.2.4 or earlier:** 0.2.5 is signed with a new release key, so
+Android won't install it over an older version. Save any unsaved drafts as new
+files first, then uninstall the old app and install 0.2.5. Uninstalling clears
+the app's recents, drafts, saved signatures and imported fonts; your PDF files
+are not touched. Later releases update 0.2.5 in place again.
 
 ## Privacy and storage
 
