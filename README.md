@@ -147,7 +147,7 @@ round-trips, source conflicts, incoming file intents, multipage editing and
 saving, field detection, caching and expiry, layouts, and rotated/cropped pages.
 Per-release results and coverage limits are recorded in
 [docs/validation](docs/validation), most recently
-[v0.2.4](docs/validation/2026-10-16-v024.md).
+[v0.2.5](docs/validation/2026-11-07-v025.md).
 
 Architecture notes for contributors are in [AGENTS.md](AGENTS.md).
 
