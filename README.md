@@ -48,6 +48,9 @@ first touch selects, moves or scrolls rather than leaving a mark.
 
 Annotations you add stay editable after saving and reopening.
 
+In landscape, the tools move to a vertical rail on the right edge, so the page
+keeps its full height and the rail never covers it.
+
 ### Fill suggestions
 
 In Hand mode, the app looks for places to write and shows small dashed hints:
@@ -153,7 +156,7 @@ round-trips, source conflicts, incoming file intents, multipage editing and
 saving, field detection, caching and expiry, layouts, and rotated/cropped pages.
 Per-release results and coverage limits are recorded in
 [docs/validation](docs/validation), most recently
-[v0.2.5](docs/validation/2026-11-07-v025.md).
+[v0.2.6](docs/validation/2026-11-27-v026.md).
 
 Architecture notes for contributors are in [AGENTS.md](AGENTS.md).
 
