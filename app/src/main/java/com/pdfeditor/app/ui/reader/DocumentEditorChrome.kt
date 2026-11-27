@@ -14,8 +14,11 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Share
@@ -40,6 +43,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.vector.PathParser
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontFamily
@@ -48,7 +52,10 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.pdfeditor.app.data.fonts.EditorFont
 
-/** The document stays full size; this compact tray only exists during annotation editing. */
+/**
+ * The document stays full size; this compact tray only exists during annotation editing. [vertical]
+ * lays it out as a two-column rail for the right edge in landscape, where height is scarce.
+ */
 @Composable
 internal fun DocumentEditingTray(
     tool: EditorTool,
@@ -66,100 +73,151 @@ internal fun DocumentEditingTray(
     onChooseFont: ((String) -> Unit)? = null,
     onImportFont: () -> Unit = {},
     fontTypeface: (String) -> Typeface = { Typeface.DEFAULT },
+    vertical: Boolean = false,
+) {
+    val showColors = (tool != EditorTool.HAND && tool != EditorTool.ERASE) || onChooseFont != null
+    val tools: @Composable () -> Unit = {
+        EditorTool.entries.forEach { entry ->
+            QuietIconButton(
+                toolGlyph(entry),
+                entry.label,
+                { onTool(entry) },
+                // Expose the active tool to accessibility services, not only as a ring.
+                Modifier.testTag("tool-${entry.name}").semantics { selected = tool == entry },
+                selected = tool == entry,
+            )
+        }
+    }
+    val history: @Composable () -> Unit = {
+        if (canUndo || canRedo) {
+            QuietIconButton(UndoGlyph, "Undo", onUndo, Modifier.testTag("undo"), enabled = canUndo)
+            QuietIconButton(RedoGlyph, "Redo", onRedo, Modifier.testTag("redo"), enabled = canRedo)
+        }
+        QuietIconButton(Icons.Filled.Check, "Finish editing", onDone, Modifier.testTag("finish-editing"))
+    }
+    Surface(modifier.testTag("editing-tray-surface"), shape = RoundedCornerShape(20.dp), color = Color.Black, shadowElevation = 0.dp) {
+        if (vertical) {
+            Row(
+                Modifier.width(SIDE_TRAY_WIDTH).animateContentSize().verticalScroll(rememberScrollState())
+                    .padding(horizontal = 6.dp, vertical = 6.dp),
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                Column { tools() }
+                Column {
+                    if (onChooseFont != null) {
+                        FontMenu(fonts, fontId, onChooseFont, onImportFont, fontTypeface, compact = true)
+                    }
+                    if (showColors) ColorMenu(color, onColor)
+                    history()
+                }
+            }
+        } else {
+            Column(Modifier.animateContentSize().padding(horizontal = 8.dp, vertical = 4.dp)) {
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    if (onChooseFont != null) {
+                        Box(Modifier.weight(1f)) { FontMenu(fonts, fontId, onChooseFont, onImportFont, fontTypeface, compact = false) }
+                    } else {
+                        Text(
+                            tool.label,
+                            Modifier.weight(1f).padding(start = 12.dp),
+                            style = MaterialTheme.typography.labelMedium,
+                            color = Color.LightGray,
+                        )
+                    }
+                    if (showColors) ColorMenu(color, onColor)
+                    history()
+                }
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) { tools() }
+            }
+        }
+    }
+}
+
+/** Width of the landscape rail: two 44dp button columns, a 4dp gap and 6dp padding each side. */
+internal val SIDE_TRAY_WIDTH = 104.dp
+
+/** [compact] shows a typeface sample button that fits the rail instead of the font's full name. */
+@Composable
+private fun FontMenu(
+    fonts: List<EditorFont>,
+    fontId: String,
+    onChooseFont: (String) -> Unit,
+    onImportFont: () -> Unit,
+    fontTypeface: (String) -> Typeface,
+    compact: Boolean,
 ) {
     var fontsVisible by remember { mutableStateOf(false) }
-    var colorsVisible by remember { mutableStateOf(false) }
-    Surface(modifier.testTag("editing-tray-surface"), shape = RoundedCornerShape(20.dp), color = Color.Black, shadowElevation = 0.dp) {
-        Column(Modifier.animateContentSize().padding(horizontal = 8.dp, vertical = 4.dp)) {
-            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                if (onChooseFont != null) {
-                    Box(Modifier.weight(1f)) {
-                        TextButton(onClick = { fontsVisible = !fontsVisible }, Modifier.testTag("font-options")) {
-                            Text(
-                                "${fonts.firstOrNull { it.id == fontId }?.displayName ?: "Font"} ▾",
-                                color = Color.White,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                            )
-                        }
-                        DropdownMenu(
-                            expanded = fontsVisible,
-                            onDismissRequest = { fontsVisible = false },
-                            modifier = Modifier.heightIn(max = 300.dp),
-                            containerColor = Color.Black,
-                        ) {
-                            fonts.forEach { font ->
-                                DropdownMenuItem(
-                                    text = { Text(font.displayName, color = Color.White, fontFamily = FontFamily(fontTypeface(font.id))) },
-                                    onClick = {
-                                        fontsVisible = false
-                                        onChooseFont(font.id)
-                                    },
-                                    modifier = Modifier.testTag("font-option-${font.id}"),
-                                )
-                            }
-                            DropdownMenuItem(
-                                text = { Text("Add font…", color = Color.White) },
-                                onClick = {
-                                    fontsVisible = false
-                                    onImportFont()
-                                },
-                                modifier = Modifier.testTag("import-font"),
-                            )
-                        }
-                    }
-                } else {
-                    Text(
-                        tool.label,
-                        Modifier.weight(1f).padding(start = 12.dp),
-                        style = MaterialTheme.typography.labelMedium,
-                        color = Color.LightGray,
-                    )
-                }
-                if ((tool != EditorTool.HAND && tool != EditorTool.ERASE) || onChooseFont != null) {
-                    Box {
-                        QuietIconButton(OptionsGlyph, "Ink colour", { colorsVisible = !colorsVisible }, Modifier.testTag("ink-options"))
-                        DropdownMenu(expanded = colorsVisible, onDismissRequest = { colorsVisible = false }, containerColor = Color.Black) {
-                            Row(Modifier.padding(8.dp).testTag("ink-colors"), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                                listOf(
-                                    0xFF000000.toInt(),
-                                    0xFFFFFFFF.toInt(),
-                                    0xFFFF3B30.toInt(),
-                                    0xFF007AFF.toInt(),
-                                    0xFF34C759.toInt(),
-                                    0xFFFFFF00.toInt(),
-                                ).forEachIndexed {
-                                        index,
-                                        value,
-                                    ->
-                                    Box(
-                                        Modifier.size(40.dp).clip(CircleShape).clickable {
-                                            onColor(value)
-                                            colorsVisible = false
-                                        }.padding(7.dp).border(if (color == value) 2.dp else 1.dp, Color.LightGray, CircleShape)
-                                            .padding(3.dp).background(Color(value), CircleShape)
-                                            .testTag("ink-color-$index"),
-                                    )
-                                }
-                            }
-                        }
-                    }
-                }
-                if (canUndo || canRedo) {
-                    QuietIconButton(UndoGlyph, "Undo", onUndo, Modifier.testTag("undo"), enabled = canUndo)
-                    QuietIconButton(RedoGlyph, "Redo", onRedo, Modifier.testTag("redo"), enabled = canRedo)
-                }
-                QuietIconButton(Icons.Filled.Check, "Finish editing", onDone, Modifier.testTag("finish-editing"))
+    val name = fonts.firstOrNull { it.id == fontId }?.displayName ?: "Font"
+    Box {
+        if (compact) {
+            Box(
+                Modifier.size(44.dp).clip(CircleShape).clickable(role = Role.Button) { fontsVisible = !fontsVisible }
+                    .semantics { contentDescription = "Font: $name" }.testTag("font-options"),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text("Aa", color = Color.White, fontFamily = FontFamily(fontTypeface(fontId)), style = MaterialTheme.typography.titleMedium)
             }
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
-                EditorTool.entries.forEach { entry ->
-                    QuietIconButton(
-                        toolGlyph(entry),
-                        entry.label,
-                        { onTool(entry) },
-                        // Expose the active tool to accessibility services, not only as a ring.
-                        Modifier.testTag("tool-${entry.name}").semantics { selected = tool == entry },
-                        selected = tool == entry,
+        } else {
+            TextButton(onClick = { fontsVisible = !fontsVisible }, Modifier.testTag("font-options")) {
+                Text("$name ▾", color = Color.White, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+        }
+        DropdownMenu(
+            expanded = fontsVisible,
+            onDismissRequest = { fontsVisible = false },
+            modifier = Modifier.heightIn(max = 300.dp),
+            containerColor = Color.Black,
+        ) {
+            fonts.forEach { font ->
+                DropdownMenuItem(
+                    text = { Text(font.displayName, color = Color.White, fontFamily = FontFamily(fontTypeface(font.id))) },
+                    onClick = {
+                        fontsVisible = false
+                        onChooseFont(font.id)
+                    },
+                    modifier = Modifier.testTag("font-option-${font.id}"),
+                )
+            }
+            DropdownMenuItem(
+                text = { Text("Add font…", color = Color.White) },
+                onClick = {
+                    fontsVisible = false
+                    onImportFont()
+                },
+                modifier = Modifier.testTag("import-font"),
+            )
+        }
+    }
+}
+
+@Composable
+private fun ColorMenu(
+    color: Int,
+    onColor: (Int) -> Unit,
+) {
+    var colorsVisible by remember { mutableStateOf(false) }
+    Box {
+        QuietIconButton(OptionsGlyph, "Ink colour", { colorsVisible = !colorsVisible }, Modifier.testTag("ink-options"))
+        DropdownMenu(expanded = colorsVisible, onDismissRequest = { colorsVisible = false }, containerColor = Color.Black) {
+            Row(Modifier.padding(8.dp).testTag("ink-colors"), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                listOf(
+                    0xFF000000.toInt(),
+                    0xFFFFFFFF.toInt(),
+                    0xFFFF3B30.toInt(),
+                    0xFF007AFF.toInt(),
+                    0xFF34C759.toInt(),
+                    0xFFFFFF00.toInt(),
+                ).forEachIndexed {
+                        index,
+                        value,
+                    ->
+                    Box(
+                        Modifier.size(40.dp).clip(CircleShape).clickable {
+                            onColor(value)
+                            colorsVisible = false
+                        }.padding(7.dp).border(if (color == value) 2.dp else 1.dp, Color.LightGray, CircleShape)
+                            .padding(3.dp).background(Color(value), CircleShape)
+                            .testTag("ink-color-$index"),
                     )
                 }
             }

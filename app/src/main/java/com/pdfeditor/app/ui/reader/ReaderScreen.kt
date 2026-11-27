@@ -97,6 +97,7 @@ import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.layout.positionInWindow
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
@@ -622,11 +623,15 @@ private fun EditorDocument(
         }
     }
 
-    val editingBottom =
-        with(androidx.compose.ui.platform.LocalDensity.current) { (if (editing && textTarget == null) editingTrayHeight else 0f).toDp() }
+    // Landscape moves the tray to a right-edge rail, so height stays with the document.
+    val sideTray = LocalConfiguration.current.let { it.screenWidthDp > it.screenHeightDp }
+    val bottomTrayHeight = if (editing && textTarget == null && !sideTray) editingTrayHeight else 0f
+    val editingBottom = with(LocalDensity.current) { bottomTrayHeight.toDp() }
+    // The rail's space stays reserved while typing hides it, so the page width doesn't reflow mid-edit.
+    val editingEnd = if (editing && sideTray) SIDE_TRAY_WIDTH + SIDE_TRAY_GAP else 0.dp
     val floatingSaveSpace = if (state.dirty || state.saving) 64.dp else 0.dp
     val saveHeight = with(LocalDensity.current) { floatingSaveSpace.toPx() }
-    val usableHeight = (viewportHeight - (if (editing && textTarget == null) editingTrayHeight else 0f) - saveHeight).coerceAtLeast(1f)
+    val usableHeight = (viewportHeight - bottomTrayHeight - saveHeight).coerceAtLeast(1f)
 
     LaunchedEffect(usableHeight, caretBounds, textTarget?.session, imeBottom) {
         if (state.paged) {
@@ -715,6 +720,7 @@ private fun EditorDocument(
         Box(
             Modifier.fillMaxSize().padding(top = headerInset)
                 .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Horizontal))
+                .padding(end = editingEnd)
                 .clipToBounds().testTag("document-surface")
                 .onSizeChanged {
                     viewportWidth = it.width.toFloat()
@@ -1152,10 +1158,16 @@ private fun EditorDocument(
             enter = fadeIn(),
             exit = fadeOut(),
             modifier =
-                Modifier.align(Alignment.BottomCenter).widthIn(max = MAX_TRAY_WIDTH)
-                    .onSizeChanged { editingTrayHeight = it.height.toFloat() }
-                    .testTag("editing-tray").navigationBarsPadding()
-                    .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Horizontal)).padding(12.dp),
+                if (sideTray) {
+                    Modifier.align(Alignment.CenterEnd).testTag("editing-tray")
+                        .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Horizontal + WindowInsetsSides.Vertical))
+                        .padding(top = 8.dp, bottom = 8.dp, end = SIDE_TRAY_GAP / 2)
+                } else {
+                    Modifier.align(Alignment.BottomCenter).widthIn(max = MAX_TRAY_WIDTH)
+                        .onSizeChanged { editingTrayHeight = it.height.toFloat() }
+                        .testTag("editing-tray").navigationBarsPadding()
+                        .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Horizontal)).padding(12.dp)
+                },
         ) {
             DocumentEditingTray(
                 tool, color, state.canUndo, state.canRedo,
@@ -1188,13 +1200,14 @@ private fun EditorDocument(
                     }
                 },
                 fontTypeface = { typefaces[it] ?: Typeface.DEFAULT },
+                vertical = sideTray,
             )
         }
         AnimatedVisibility(
             visible = zoomVisible,
             enter = fadeIn(),
             exit = fadeOut(),
-            modifier = Modifier.align(Alignment.BottomCenter).aboveTray(editingBottom, 24.dp),
+            modifier = Modifier.align(Alignment.BottomCenter).padding(end = editingEnd).aboveTray(editingBottom, 24.dp),
         ) {
             Text(
                 "${(zoom * 100).roundToInt()}%",
@@ -1251,7 +1264,7 @@ private fun EditorDocument(
             modifier =
                 Modifier.align(Alignment.CenterEnd).fillMaxHeight()
                     .windowInsetsPadding(WindowInsets.systemBars.union(WindowInsets.displayCutout))
-                    .padding(top = 64.dp, bottom = editingBottom + floatingSaveSpace + 16.dp),
+                    .padding(top = 64.dp, bottom = editingBottom + floatingSaveSpace + 16.dp, end = editingEnd),
         )
         (fontMessage ?: missingFontNotice ?: state.message)?.let { message ->
             var dismissed by remember(message) { mutableStateOf(false) }
@@ -1263,7 +1276,8 @@ private fun EditorDocument(
             }
             if (!dismissed) {
                 Surface(
-                    Modifier.align(Alignment.BottomCenter).aboveTray(editingBottom, 24.dp).padding(horizontal = 16.dp),
+                    Modifier.align(Alignment.BottomCenter).padding(end = editingEnd).aboveTray(editingBottom, 24.dp)
+                        .padding(horizontal = 16.dp),
                     shape = MaterialTheme.shapes.medium,
                     color = Color.Black,
                 ) { Text(message, Modifier.padding(12.dp), style = MaterialTheme.typography.bodySmall) }
@@ -1405,10 +1419,14 @@ private fun SignatureCapture(
     var strokes by remember { mutableStateOf<List<List<Offset>>>(emptyList()) }
     var active by remember { mutableStateOf<List<Offset>>(emptyList()) }
     var width by remember { mutableFloatStateOf(1f) }
+    // Strokes are normalised by width, so a shorter landscape canvas keeps the dialog on screen.
+    val landscape = LocalConfiguration.current.let { it.screenWidthDp > it.screenHeightDp }
     AlertDialog(onDismissRequest = onCancel, title = { Text("Draw your signature") }, text = {
         Column {
             Canvas(
-                Modifier.fillMaxWidth().height(180.dp).background(Color.White).testTag("signature-canvas").onSizeChanged {
+                Modifier.fillMaxWidth().height(
+                    if (landscape) 140.dp else 180.dp,
+                ).background(Color.White).testTag("signature-canvas").onSizeChanged {
                     width = it.width.toFloat()
                 }.pointerInput(Unit) {
                     awaitEachGesture {
@@ -1471,6 +1489,9 @@ private class GestureMemory {
 }
 
 private val MAX_TRAY_WIDTH = 560.dp
+
+/** Space between the landscape rail and the document, split either side of the rail. */
+private val SIDE_TRAY_GAP = 12.dp
 
 /** Bottom overlays sit [gap] above the editing tray when it shows, else above the nav bar. */
 private fun Modifier.aboveTray(

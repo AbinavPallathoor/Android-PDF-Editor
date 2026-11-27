@@ -57,8 +57,8 @@ coordinates use the displayed CropBox after rotation, with a top-left origin.
 `AnnotationBounds` keeps movable text/signatures within the page. Text extraction
 uses PDFBox geometry and runs off the UI thread.
 
-Text is entered directly on the page through `InlinePageText`, with IME-aware caret visibility. Live updates persist through `DocumentEdits.editText`, coalesced by typing session into one undo step. Visual wrapping becomes explicit PDF newlines; multiline text stays within the page. Selection outlines use PDF-space bounds. Selected text boxes expose four corner
-handles after typing finishes; resizing reflows preserved source text at a stable
+Text is entered directly on the page through `InlinePageText`, with IME-aware caret visibility. Live updates persist through `DocumentEdits.editText`, coalesced by typing session into one undo step. Visual wrapping becomes explicit PDF newlines; multiline text stays within the page. Selection outlines use PDF-space bounds. Selected text boxes expose a bottom-right
+resize handle after typing finishes; resizing reflows preserved source text at a stable
 font size and commits one undo step. Width/height and font IDs are PDF-space model
 properties and survive drafts/export. The compact tray offers contextual text
 colour and font controls. Sans (Roboto), Serif (Droid Serif), and Mono (Droid Sans
@@ -185,7 +185,14 @@ with the signature. Legacy `null` widths keep the old fixed 1.5pt until first re
 when that width is baked in. Signature ink draws as midpoint quadratic curves.
 
 Landscape: the document surface, header row and editing tray pad for horizontal
-`safeDrawing` insets (side nav bar/cutout). The tray and expanded panel cap at 560dp.
+`safeDrawing` insets (side nav bar/cutout). When the window is wider than tall, the
+editing tray becomes a fixed-width (`SIDE_TRAY_WIDTH`) two-column rail on the right
+edge: tools in one column; font, colour, undo/redo and Done in the other. The document
+surface pads its end by the rail's width for the whole editing session (also while
+typing hides the rail), so the page never reflows mid-edit and no bottom height is
+reserved. The scrollbar, zoom label and notices shift clear of it. In landscape, document
+options put the preview on the left and a 320–440dp panel on the right. Otherwise the
+tray and expanded panel cap at 560dp, and Home's recents cap at 640dp.
 Bottom overlays sit above the measured tray (`aboveTray`), not fixed offsets. Page
 grids use `GridCells.Adaptive`. Scroll mode re-anchors to the same page and fraction
 when the viewport width changes (`ReadingAnchor`).

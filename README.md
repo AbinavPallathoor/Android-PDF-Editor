@@ -40,11 +40,11 @@ first touch selects, moves or scrolls rather than leaving a mark.
 
 | Tool | What it does |
 | --- | --- |
-| Hand | Select and move drawings, text and signatures; drag corner handles to resize text boxes and signatures; tap Fill/Sign hints. |
+| Hand | Select and move drawings, text and signatures; drag the bottom-right handle to resize text boxes and signatures; tap Fill/Sign hints. |
 | Pen / Highlight | Freehand ink and translucent highlights, in your chosen colour. |
 | Text | Type directly on the page. Sans, Serif and Mono are bundled; import static TrueType fonts locally. |
 | Sign | Draw a signature once, reuse it anywhere; it scales without distortion. |
-| Erase | Remove an annotation with a tap. |
+| Erase | Tap or swipe across annotations to remove them; one undo brings a whole swipe back. |
 
 Annotations you add stay editable after saving and reopening.
 

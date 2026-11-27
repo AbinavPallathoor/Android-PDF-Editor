@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.systemBarsPadding
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -62,7 +63,12 @@ fun HomeScreen(
     Box(
         modifier = modifier.fillMaxSize().background(MaterialTheme.colorScheme.background),
     ) {
-        Column(modifier = Modifier.fillMaxSize().systemBarsPadding().windowInsetsPadding(WindowInsets.displayCutout)) {
+        // Capped and centred so recents don't stretch edge to edge in landscape.
+        Column(
+            modifier =
+                Modifier.align(Alignment.TopCenter).systemBarsPadding().windowInsetsPadding(WindowInsets.displayCutout)
+                    .widthIn(max = 640.dp).fillMaxSize(),
+        ) {
             if (recents.isEmpty()) {
                 EmptyState(modifier = Modifier.weight(1f))
             } else {

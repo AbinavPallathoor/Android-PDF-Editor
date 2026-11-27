@@ -9,7 +9,9 @@ import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
@@ -28,6 +30,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.only
@@ -210,16 +213,26 @@ fun DocumentTitleBar(
                 val screenWidthPx = with(density) { maxWidth.toPx() }
                 val screenHeightPx = with(density) { maxHeight.toPx() }
                 val topInset = WindowInsets.statusBarsIgnoringVisibility.union(WindowInsets.displayCutout).getTop(density)
+                // Wide, short windows put the panel beside the preview instead of below it, where
+                // it would leave the preview only a sliver of height.
+                val sideBySide = maxWidth > maxHeight && maxWidth >= 560.dp
+                val panelWidth = (maxWidth * .45f).coerceIn(320.dp, 440.dp)
+                val previewAreaPx = if (sideBySide) screenWidthPx - with(density) { (panelWidth + 24.dp).toPx() } else screenWidthPx
                 // Use the panel's actual position: ancestors or the window may already handle IME insets.
                 val availableHeight =
-                    ((panelTopPx.takeIf { it > 0f } ?: screenHeightPx) - topInset - with(density) { 48.dp.toPx() })
-                        .coerceAtLeast(0f)
+                    if (sideBySide) {
+                        (screenHeightPx - topInset - WindowInsets.navigationBars.getBottom(density) - with(density) { 48.dp.toPx() })
+                            .coerceAtLeast(0f)
+                    } else {
+                        ((panelTopPx.takeIf { it > 0f } ?: screenHeightPx) - topInset - with(density) { 48.dp.toPx() })
+                            .coerceAtLeast(0f)
+                    }
                 thumbnail?.let { bmp ->
                     val aspect = bmp.height.toFloat() / bmp.width.toFloat()
                     val targetWidthPx =
-                        minOf(with(density) { THUMB_TARGET_WIDTH_DP.dp.toPx() }, screenWidthPx * .68f, availableHeight / aspect)
+                        minOf(with(density) { THUMB_TARGET_WIDTH_DP.dp.toPx() }, previewAreaPx * .68f, availableHeight / aspect)
                     val targetHeightPx = targetWidthPx * aspect
-                    val targetLeft = (screenWidthPx - targetWidthPx) / 2f
+                    val targetLeft = (previewAreaPx - targetWidthPx) / 2f
                     val targetTop = topInset + with(density) { 24.dp.toPx() } + (availableHeight - targetHeightPx) / 2f
                     val start =
                         thumbBoundsInRoot ?: Rect(targetLeft, targetTop, targetLeft + targetWidthPx, targetTop + targetHeightPx)
@@ -245,19 +258,33 @@ fun DocumentTitleBar(
                 }
                 AnimatedVisibility(
                     visible = expanded,
-                    enter = fadeIn(tween(200)) + slideInVertically(tween(280)) { it / 3 },
-                    exit = fadeOut(tween(140)) + slideOutVertically(tween(180)) { it / 4 },
+                    enter =
+                        fadeIn(tween(200)) +
+                            if (sideBySide) slideInHorizontally(tween(280)) { it / 3 } else slideInVertically(tween(280)) { it / 3 },
+                    exit =
+                        fadeOut(tween(140)) +
+                            if (sideBySide) slideOutHorizontally(tween(180)) { it / 4 } else slideOutVertically(tween(180)) { it / 4 },
                     modifier =
-                        Modifier.align(Alignment.BottomCenter).widthIn(max = 560.dp)
-                            .windowInsetsPadding(
-                                WindowInsets.statusBarsIgnoringVisibility.union(WindowInsets.displayCutout).only(WindowInsetsSides.Top),
-                            )
-                            .navigationBarsPadding().imePadding(),
+                        if (sideBySide) {
+                            Modifier.align(Alignment.CenterEnd)
+                                .windowInsetsPadding(
+                                    WindowInsets.statusBarsIgnoringVisibility.union(WindowInsets.displayCutout)
+                                        .only(WindowInsetsSides.Top + WindowInsetsSides.Horizontal),
+                                )
+                                .navigationBarsPadding().imePadding().padding(12.dp).width(panelWidth)
+                        } else {
+                            Modifier.align(Alignment.BottomCenter).widthIn(max = 560.dp)
+                                .windowInsetsPadding(
+                                    WindowInsets.statusBarsIgnoringVisibility.union(WindowInsets.displayCutout).only(WindowInsetsSides.Top),
+                                )
+                                .navigationBarsPadding().imePadding()
+                        },
                 ) {
                     Column(
                         Modifier.fillMaxWidth().onGloballyPositioned { panelTopPx = it.positionInRoot().y - rootTopPx }
                             .animateContentSize(tween(220)).verticalScroll(rememberScrollState())
-                            .clip(RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp)).background(Color.Black)
+                            .clip(if (sideBySide) RoundedCornerShape(24.dp) else RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp))
+                            .background(Color.Black)
                             .clickable {}.padding(top = 12.dp, bottom = 16.dp),
                         horizontalAlignment = Alignment.CenterHorizontally,
                     ) {
